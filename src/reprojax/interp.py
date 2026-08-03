@@ -67,10 +67,25 @@ def reproject_interp_core(data, x_out, y_out, transform, order=1):
         raise ValueError(f"order must be one of {SUPPORTED_ORDERS} (bicubic and higher are not supported), got {order!r}")
 
     x_in, y_in = transform(x_out, y_out)
+    coord_is_nan = jnp.isnan(x_in) | jnp.isnan(y_in)
 
     ny, nx = data.shape
-    y_clipped = _clip_border_pixels(y_in, ny)
-    x_clipped = _clip_border_pixels(x_in, nx)
+    # NaN coordinates (from the PixelTransform contract's invalid-point
+    # convention) must never reach map_coordinates, even though the final
+    # result at those positions is masked to NaN regardless: its *gradient*
+    # w.r.t. `data` is a scatter-add of (bilinear weight * upstream
+    # cotangent) into the neighboring data pixels, and a NaN coordinate
+    # makes that weight NaN. The upstream cotangent is correctly zeroed at
+    # invalid positions by the jnp.where below (and by any further masking a
+    # caller applies), but `nan * 0 = nan` in the scatter itself, corrupting
+    # the gradient at whatever data pixels the NaN coordinate's (undefined)
+    # floor happens to land on. Substituting a safe, finite, in-bounds
+    # coordinate here — its value is discarded by the NaN masking either
+    # way — keeps that scatter finite.
+    x_safe = jnp.where(coord_is_nan, 0.0, x_in)
+    y_safe = jnp.where(coord_is_nan, 0.0, y_in)
+    y_clipped = _clip_border_pixels(y_safe, ny)
+    x_clipped = _clip_border_pixels(x_safe, nx)
     coords = [y_clipped, x_clipped]
 
     result = map_coordinates(data, coords, order=order, mode="constant", cval=0.0)
@@ -85,7 +100,7 @@ def reproject_interp_core(data, x_out, y_out, transform, order=1):
     coverage_input = jnp.ones((ny, nx), dtype=jnp.float64)
     coverage = map_coordinates(coverage_input, coords, order=order, mode="constant", cval=0.0)
 
-    valid_coord = (coverage >= 1.0 - _COVERAGE_VALID_THRESHOLD) & ~(jnp.isnan(x_in) | jnp.isnan(y_in))
+    valid_coord = (coverage >= 1.0 - _COVERAGE_VALID_THRESHOLD) & ~coord_is_nan
 
     result = jnp.where(valid_coord, result, jnp.nan).astype(data.dtype)
     # Footprint tracks the final result, not just coordinate validity: `data`

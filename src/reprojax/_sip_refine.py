@@ -57,6 +57,19 @@ def refine_pixel_estimate(mwcs, x0, y0, xn_target, yn_target, zn_target, n_steps
         # equations rather than a general least squares.
         jtj = jac.T @ jac
         jtr = jac.T @ r
+        # Small Levenberg-Marquardt damping, scaled to jtj's own magnitude
+        # (so it's meaningful at any pixel scale). Standard practice for a
+        # Gauss-Newton solve: negligible effect on the converged answer in
+        # ordinary use, but guards against jtj itself being poorly
+        # conditioned (e.g. very high SIP order with widely-scaled
+        # coefficients). It does *not* address the narrow, real-data-
+        # irrelevant NaN-second-derivative case documented on
+        # compose_transform / in tests/test_differentiability.py — that one
+        # isn't a jtj-conditioning issue (empirically unaffected by this
+        # damping across many orders of magnitude) but something specific
+        # to differentiating through jacfwd at an exact geometric symmetry.
+        damping = 1e-8 * jnp.trace(jtj)
+        jtj = jtj + damping * jnp.eye(2, dtype=jtj.dtype)
         return xy - jnp.linalg.solve(jtj, jtr)
 
     def single_point(x0_i, y0_i, xn_i, yn_i, zn_i):

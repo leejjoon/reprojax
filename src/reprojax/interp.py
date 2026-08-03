@@ -6,13 +6,15 @@ and is a pure function of arrays — jit/vmap/grad-safe. The wrapper
 transform composition) and matches ``reproject``'s call/return shape.
 """
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from astropy.io.fits import Header
 from astropy.wcs import WCS
 from jax.scipy.ndimage import map_coordinates
 
-from .transform import build_transform
+from ._sip_refine import DEFAULT_REFINE_STEPS
+from .transform import build_transform, compose_transform
 
 SUPPORTED_ORDERS = (0, 1)
 
@@ -109,6 +111,68 @@ def reproject_interp_core(data, x_out, y_out, transform, order=1):
     # Matches reproject's own footprint definition (~isnan(output)).
     footprint = (~jnp.isnan(result)).astype(jnp.float32)
     return result, footprint
+
+
+def reproject_interp_batched(
+    data_batch,
+    mwcs_in_batch,
+    mwcs_out,
+    rotation_batch,
+    x_out,
+    y_out,
+    order=1,
+    sip_inverse_refine_steps=DEFAULT_REFINE_STEPS,
+):
+    """Reproject a batch of exposures onto one shared output grid.
+
+    Batching is `jax.vmap` over the whole per-exposure pipeline (build the
+    transform, then reproject) — per the design, batching happens by
+    vmapping the core, not by threading a batch dimension through a single
+    transform. This is a thin, documented recipe: build ``mwcs_in_batch``
+    (and ``rotation_batch``) yourself with mapprojax's JAX WCS classes and
+    JAX pytrees, each leaf carrying a leading batch dimension, and everything
+    else follows the same path as the single-exposure core.
+
+    Parameters
+    ----------
+    data_batch : array, shape (n, ny_in, nx_in)
+        Stacked input images. Individual exposures may differ in size only
+        if you pad them to a common shape first — vmap requires uniform
+        shapes across the batch.
+    mwcs_in_batch : a mapprojax WCS (e.g. TanJax), batched
+        Construct with each parameter (crpix, cd, crval, and SIP
+        coefficients if used) carrying a leading dimension of size ``n`` —
+        e.g. ``TanJax(crpix_batch, cd_batch, crval_batch, sip=sip_batch)``.
+        Parameters that don't vary across the batch (e.g. a shared crpix for
+        exposures from the same detector) still need that leading dimension;
+        broadcast them yourself (``jnp.broadcast_to``) before constructing.
+        Every exposure must share the same SIP-or-not structure (vmap
+        requires a uniform pytree).
+    mwcs_out : a mapprojax WCS
+        The single, shared output projection (not batched).
+    rotation_batch : array, shape (n, 3, 3)
+        Per-exposure celestial frame rotation (see :func:`build_transform`).
+        Often identical across the batch (same input/output frame pair for
+        every exposure); broadcast to shape ``(n, 3, 3)`` in that case.
+    x_out, y_out : arrays
+        The shared output pixel grid (not batched).
+    order : int
+        0 (nearest) or 1 (bilinear).
+    sip_inverse_refine_steps : int
+        See :func:`build_transform`.
+
+    Returns
+    -------
+    results, footprints : arrays, shape (n, *x_out.shape)
+        Element-wise identical to calling :func:`reproject_interp_core` once
+        per exposure with the same ``x_out``/``y_out``.
+    """
+
+    def _single(data, mwcs_in, rotation):
+        transform = compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=sip_inverse_refine_steps)
+        return reproject_interp_core(data, x_out, y_out, transform, order=order)
+
+    return jax.vmap(_single, in_axes=(0, 0, 0))(data_batch, mwcs_in_batch, rotation_batch)
 
 
 def _as_wcs(wcs_or_header):

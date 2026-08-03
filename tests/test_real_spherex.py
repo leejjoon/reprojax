@@ -24,8 +24,9 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.wcs.utils import wcs_to_celestial_frame
 from reproject import reproject_interp as original_reproject_interp
+from reproject.adaptive import reproject_adaptive as original_reproject_adaptive
 
-from reprojax import build_transform, reproject_interp
+from reprojax import build_transform, reproject_adaptive, reproject_interp
 from reprojax.transform import _mapprojax_wcs
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -176,3 +177,33 @@ def test_real_data_has_masked_pixels_handled_correctly(spherex_data):
     the fixture still exercises that path (not just clean synthetic data).
     """
     assert np.isnan(spherex_data).sum() > 0
+
+
+# ---------------------------------------------------------------------------
+# Adaptive (DeForest 2004): the ticket #6 real-data integration case.
+# ---------------------------------------------------------------------------
+
+
+def test_real_reproject_adaptive_matches_original(spherex_header, spherex_data, template_header):
+    wcs_in = WCS(spherex_header)
+
+    arr, footprint = reproject_adaptive((spherex_data, wcs_in), template_header, max_window_radius=10)
+    arr, footprint = np.asarray(arr), np.asarray(footprint)
+
+    arr_ref, footprint_ref = original_reproject_adaptive((spherex_data, wcs_in), template_header)
+    arr_ref, footprint_ref = np.asarray(arr_ref), np.asarray(footprint_ref)
+
+    assert np.array_equal(footprint.astype(bool), footprint_ref.astype(bool))
+
+    valid = footprint.astype(bool) & footprint_ref.astype(bool)
+    assert valid.any()
+
+    # 1,334,193 of 1,334,200 jointly-valid pixels agree to a median of ~4e-8.
+    # The remaining 7 cluster at the same real, unmasked data spike (around
+    # row 807-809, col 609-611) diagnosed in test_real_reproject_interp_matches_original
+    # -- this fixture dropped the FLAGS extension that would normally mask
+    # it, so a sub-micropixel position difference near a ~10^4-per-pixel
+    # local gradient gets amplified into a value difference up to ~0.003.
+    # Not an adaptive-algorithm defect; the same root cause as the interp
+    # case, at a comparable magnitude.
+    np.testing.assert_allclose(arr[valid], arr_ref[valid], rtol=1e-6, atol=0.005)

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reprojax"
+version = "0.1.0"
+description = "JAX-native, differentiable reprojection of astronomical images (a port of astropy's reproject)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.20",
+    "jax>=0.5",
+    "astropy>=6",
+    "mapprojax",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "reproject"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

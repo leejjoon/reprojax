@@ -12,6 +12,7 @@ from mapprojax.jax_projections import SinJax, TanJax
 from mapprojax.utils import apply_rotation
 
 from ._astropy_wcs import frame_rotation_matrix, projection_code, wcs_params_from_astropy
+from ._sip_refine import DEFAULT_REFINE_STEPS, refine_pixel_estimate
 
 _PROVIDERS = {"TAN": TanJax, "SIN": SinJax}
 
@@ -22,7 +23,7 @@ def _mapprojax_wcs(astropy_wcs):
     return _PROVIDERS[code](crpix, cd, crval, sip=sip)
 
 
-def build_transform(wcs_in, wcs_out):
+def build_transform(wcs_in, wcs_out, sip_inverse_refine_steps=DEFAULT_REFINE_STEPS):
     """Build a ``PixelTransform`` mapping output pixels to input pixels.
 
     The composed pipeline, per output pixel: output pixel -> output-frame
@@ -33,6 +34,15 @@ def build_transform(wcs_in, wcs_out):
     ----------
     wcs_in, wcs_out : astropy.wcs.WCS
         TAN or SIN projections, optionally with SIP distortion.
+    sip_inverse_refine_steps : int
+        When ``wcs_in`` has SIP, the number of Newton steps (see
+        :mod:`reprojax._sip_refine`) used to refine the AP/BP-based pixel
+        estimate. AP/BP is an independently-fitted approximation of the true
+        inverse, and its quality varies file to file — on a real SPHEREx L2b
+        header it disagreed with astropy's iterative inversion by up to
+        0.03 px, while a couple of Newton steps against the (exact) forward
+        polynomial brings that to ~1e-7 px. Set to 0 to disable (matching
+        the plain AP/BP evaluation used before this was diagnosed).
 
     Returns
     -------
@@ -41,6 +51,7 @@ def build_transform(wcs_in, wcs_out):
     mwcs_in = _mapprojax_wcs(wcs_in)
     mwcs_out = _mapprojax_wcs(wcs_out)
     rotation = jnp.asarray(frame_rotation_matrix(wcs_out, wcs_in))
+    refine_steps = sip_inverse_refine_steps if wcs_in.sip is not None else 0
 
     def transform(x_out, y_out):
         x_out = jnp.asarray(x_out)
@@ -58,6 +69,10 @@ def build_transform(wcs_in, wcs_out):
         xn, yn, zn = apply_rotation(mwcs_in.r_matrix, *v_in_celestial)
         valid = xn > 0
         x_in, y_in = mwcs_in.native_to_pix(xn, yn, zn)
+
+        if refine_steps > 0:
+            x_in, y_in = refine_pixel_estimate(mwcs_in, x_in, y_in, xn, yn, zn, n_steps=refine_steps)
+
         x_in = jnp.where(valid, x_in, jnp.nan)
         y_in = jnp.where(valid, y_in, jnp.nan)
         return x_in, y_in

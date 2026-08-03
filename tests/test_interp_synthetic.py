@@ -94,37 +94,36 @@ def test_sip_forward_path_output_side():
 
 
 # ---------------------------------------------------------------------------
-# SIP: reverse-polynomial path (SIP on the input WCS) — documented, looser
-# tolerance.
+# SIP: reverse-polynomial path (SIP on the input WCS).
 #
-# Ticket #2 established that mapprojax's AP/BP evaluation (a direct, fitted
-# approximation of the true SIP inverse — see reprojax._astropy_wcs) agrees
-# with astropy's iterative all_world2pix to ~1.5e-5 px at this distortion
-# magnitude, comfortably under the *transform*-level 1e-4 px bar. At the
-# *image* level, that residual position error shows up as a value error of
-# roughly the same order as the local pixel-to-pixel gradient of the data
-# (here, differences of order 1 for uniform random data), i.e. ~1e-5 — three
-# orders of magnitude above the 1e-8 rtol bar used elsewhere in this suite.
-# This is not a bug: it is the direct, expected consequence of the SIP
-# reverse-polynomial being an approximate inverse, diagnosed in ticket #2.
-# Tightening this test would require either negligible SIP coefficients
-# (defeating the point of testing the SIP path) or the AP/BP iterative
-# refinement that ticket #4 adds when validating real SPHEREx headers, which
-# have their own, independently-measured inversion quality. So we assert a
-# tolerance set with margin above the diagnosed residual instead of the
-# blanket rtol=1e-8.
+# This scenario originally needed a documented, three-orders-of-magnitude
+# looser tolerance here: the direct AP/BP evaluation's ~1.5e-5 px position
+# error (comfortably under the *transform*-level bar, but not once carried
+# through a data gradient to the *image* level) showed up as a ~1e-5 value
+# error. Ticket #4 diagnosed the same shortfall at much larger, real-world
+# magnitude on an actual SPHEREx header (AP/BP vs astropy's iterative
+# inversion: up to 0.03 px) and fixed it at the source — build_transform now
+# Newton-refines the AP/BP estimate against the exact forward polynomial
+# (reprojax._sip_refine) whenever SIP is present. That drops the residual
+# here to the ~1e-8 px Newton-convergence floor, so this scenario now uses
+# distortion an order of magnitude larger than before (still comfortably
+# clearing the transform-level bar without refinement) and needs only a
+# small atol margin above that floor, not a bespoke, order(s)-of-magnitude
+# exception. See tests/test_transform_synthetic.py::test_sip_reverse_path_input_side
+# and test_sip_reverse_path_needs_newton_refinement for the transform-level
+# picture, and tests/test_real_spherex.py for the real-header measurement.
 # ---------------------------------------------------------------------------
 
 
 def test_sip_reverse_path_input_side():
-    scale = 2e-7
+    scale = 1e-6
     a = {(2, 0): scale, (1, 1): -0.5 * scale, (0, 2): 0.75 * scale}
     b = {(2, 0): -0.75 * scale, (1, 1): 0.6 * scale, (0, 2): -0.5 * scale}
     sip = make_sip(a, b, (-512, 512), (-512, 512))
 
     h_in = make_header((512.0, 512.0), (180.0, 30.0), 1.0, sip=sip, naxis=(1024, 1024))
     h_out = make_header((100.0, 100.0), (180.02, 30.01), 0.9, rot_deg=-15.0, naxis=(200, 200))
-    assert_matches_original(h_in, h_out, (200, 200), rtol=0, atol=2e-5)
+    assert_matches_original(h_in, h_out, (200, 200), atol=2e-8)
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +244,26 @@ def test_footprint_semantics_are_self_consistent():
     arr, footprint = np.asarray(arr), np.asarray(footprint)
 
     assert footprint.min() == 0.0 and footprint.max() == 1.0  # scenario actually exercises both
+    np.testing.assert_array_equal(np.isnan(arr), footprint == 0.0)
+
+
+def test_footprint_is_zero_where_input_data_itself_is_nan():
+    """A masked/bad input pixel (real value NaN, not a coordinate-validity
+    NaN) must also zero the footprint at output pixels that land on it —
+    the actual real-data failure mode ticket #4 caught, where footprint had
+    been computed from coordinate validity alone instead of from whether the
+    interpolated result is NaN.
+    """
+    h_in = make_header((100.0, 100.0), (180.0, 30.0), 1.0, naxis=(200, 200))
+    h_out = make_header((100.0, 100.0), (180.0, 30.0), 1.0, naxis=(200, 200))  # identity mapping
+    data = _random_data(h_in)
+    data[100, 100] = np.nan  # squarely inside the field, at a valid coordinate
+
+    arr, footprint = reproject_interp((data, WCS(h_in)), WCS(h_out), shape_out=(200, 200))
+    arr, footprint = np.asarray(arr), np.asarray(footprint)
+
+    assert np.isnan(arr[100, 100])
+    assert footprint[100, 100] == 0.0
     np.testing.assert_array_equal(np.isnan(arr), footprint == 0.0)
 
 

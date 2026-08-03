@@ -7,6 +7,7 @@ transform composition) and matches ``reproject``'s call/return shape.
 """
 
 import jax.numpy as jnp
+import numpy as np
 from astropy.io.fits import Header
 from astropy.wcs import WCS
 from jax.scipy.ndimage import map_coordinates
@@ -84,10 +85,14 @@ def reproject_interp_core(data, x_out, y_out, transform, order=1):
     coverage_input = jnp.ones((ny, nx), dtype=jnp.float64)
     coverage = map_coordinates(coverage_input, coords, order=order, mode="constant", cval=0.0)
 
-    valid = (coverage >= 1.0 - _COVERAGE_VALID_THRESHOLD) & ~(jnp.isnan(x_in) | jnp.isnan(y_in))
+    valid_coord = (coverage >= 1.0 - _COVERAGE_VALID_THRESHOLD) & ~(jnp.isnan(x_in) | jnp.isnan(y_in))
 
-    result = jnp.where(valid, result, jnp.nan).astype(data.dtype)
-    footprint = valid.astype(jnp.float32)
+    result = jnp.where(valid_coord, result, jnp.nan).astype(data.dtype)
+    # Footprint tracks the final result, not just coordinate validity: `data`
+    # itself can contain NaN (real masked/bad pixels), which propagates
+    # through interpolation even when the coordinate is fully in-bounds.
+    # Matches reproject's own footprint definition (~isnan(output)).
+    footprint = (~jnp.isnan(result)).astype(jnp.float32)
     return result, footprint
 
 
@@ -97,6 +102,18 @@ def _as_wcs(wcs_or_header):
     if isinstance(wcs_or_header, Header):
         return WCS(wcs_or_header)
     raise TypeError(f"expected an astropy WCS or Header, got {type(wcs_or_header)!r}")
+
+
+def _to_native_byte_order(data):
+    """FITS data is always big-endian; JAX only accepts native-byte-order
+    arrays. A plain ``jnp.asarray`` on data read straight from
+    ``astropy.io.fits`` fails outright, so the wrapper normalizes here
+    before anything touches JAX.
+    """
+    data = np.asarray(data)
+    if not data.dtype.isnative:
+        data = data.astype(data.dtype.newbyteorder("="))
+    return data
 
 
 def _shape_from_header(wcs_or_header):
@@ -148,4 +165,5 @@ def reproject_interp(input_data, output_projection, shape_out=None, order=1):
     )
 
     transform = build_transform(wcs_in, wcs_out)
-    return reproject_interp_core(jnp.asarray(data), x_out, y_out, transform, order=order)
+    data = jnp.asarray(_to_native_byte_order(data))
+    return reproject_interp_core(data, x_out, y_out, transform, order=order)

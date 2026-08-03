@@ -118,25 +118,49 @@ def test_sip_forward_path_output_side():
 
 # ---------------------------------------------------------------------------
 # SIP: reverse-polynomial path (SIP on the input WCS — proj_xyz evaluates
-# native_to_pix, which applies AP/BP directly). AP/BP are a fitted
-# approximation of the true inverse, so we use a modest, realistic
-# distortion magnitude (~0.1 px) where a straightforward least-squares fit
-# is accurate well below the Tier-1 tolerance. Larger, real-world distortion
-# with imperfect AP/BP (and any iterative refinement it needs) is validated
-# against actual SPHEREx headers separately, not here.
+# native_to_pix, which applies AP/BP directly). AP/BP is a fitted
+# approximation of the true inverse; build_transform now Newton-refines it
+# (reprojax._sip_refine) against the exact forward polynomial, which is what
+# gets this comfortably under tolerance even at a distortion magnitude an
+# order of magnitude larger than the AP/BP fit alone would clear. The
+# refinement was diagnosed and added against a real SPHEREx L2b header
+# (ticket #4), where the raw AP/BP evaluation disagreed with astropy's
+# iterative inversion by up to 0.03 px; see tests/test_real_spherex.py.
 # ---------------------------------------------------------------------------
 
 
-def test_sip_reverse_path_input_side():
-    scale = 2e-7
+def _reverse_sip_fixture(scale=1e-6):
     a = {(2, 0): scale, (1, 1): -0.5 * scale, (0, 2): 0.75 * scale}
     b = {(2, 0): -0.75 * scale, (1, 1): 0.6 * scale, (0, 2): -0.5 * scale}
     sip = make_sip(a, b, (-512, 512), (-512, 512))
-
     h_in = make_header((512.0, 512.0), (180.0, 30.0), 1.0, sip=sip)
     h_out = make_header((600.0, 400.0), (180.05, 30.02), 0.8, rot_deg=-7.0)
+    return h_in, h_out
 
+
+def test_sip_reverse_path_input_side():
+    h_in, h_out = _reverse_sip_fixture()
     assert_composed_transform_matches_astropy(h_in, h_out)
+
+
+def test_sip_reverse_path_needs_newton_refinement():
+    """At this distortion magnitude, the raw AP/BP evaluation alone misses
+    the Tier-1 tolerance by more than an order of magnitude — demonstrating
+    that build_transform's default refinement (see reprojax._sip_refine) is
+    load-bearing here, not just a decorative safety margin.
+    """
+    h_in, h_out = _reverse_sip_fixture()
+    wcs_in, wcs_out = WCS(h_in), WCS(h_out)
+    transform = build_transform(wcs_in, wcs_out, sip_inverse_refine_steps=0)
+
+    x_out, y_out = _sample_pixels(2000, seed=1)
+    x_in, y_in = transform(x_out, y_out)
+    x_in, y_in = np.asarray(x_in), np.asarray(y_in)
+
+    ra, dec = wcs_out.all_pix2world(x_out, y_out, 0)
+    x_ref, y_ref = wcs_in.all_world2pix(ra, dec, 0)
+    err = np.hypot(x_in - x_ref, y_in - y_ref)
+    assert np.nanmax(err) > 10 * PIX_TOL
 
 
 # ---------------------------------------------------------------------------

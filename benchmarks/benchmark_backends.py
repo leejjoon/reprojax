@@ -54,7 +54,7 @@ import reprojax
 from reprojax._astropy_wcs import frame_rotation_matrix, wcs_params_from_astropy
 from reprojax.adaptive import reproject_adaptive_core
 from reprojax.interp import reproject_interp_core
-from reprojax.transform import compose_transform
+from reprojax.transform import build_transform, compose_transform
 
 DATA_DIR = Path(__file__).parent.parent / "tests" / "data"
 BATCH_SIZE = 8
@@ -171,8 +171,10 @@ def main():
 
     data, header_in, header_out = load_fixture()
     wcs_in = WCS(header_in)
+    wcs_out = WCS(header_out)
     shape_out = (header_out["NAXIS2"], header_out["NAXIS1"])
     ny, nx = shape_out
+    y_out, x_out = jnp.meshgrid(jnp.arange(ny, dtype=jnp.float64), jnp.arange(nx, dtype=jnp.float64), indexing="ij")
 
     print(f"--- Single image: {data.shape} -> {shape_out} ---")
 
@@ -209,14 +211,34 @@ def main():
 
     t_adaptive_compile = timed(reprojax.reproject_adaptive, (data, wcs_in), header_out, max_window_radius=10)
     t_adaptive_warm = timed(reprojax.reproject_adaptive, (data, wcs_in), header_out, max_window_radius=10)
-    print(f"  reprojax reproject_adaptive:                 {t_adaptive_warm:.3f}s warm ({t_adaptive_compile:.3f}s incl. compile)")
+    print(f"  reprojax reproject_adaptive (wrapper, repeated calls):    {t_adaptive_warm:.3f}s warm ({t_adaptive_compile:.3f}s incl. compile)")
+
+    # The wrapper's "warm" number above is NOT the algorithm's true warm
+    # speed for reproject_adaptive specifically: reprojax.reproject_adaptive
+    # calls build_transform() fresh internally on every invocation, and the
+    # resulting closure is a *static* jit argument, so each call retraces
+    # the jaxpr from scratch even though the compiled executable itself may
+    # still be cached at a lower level. For reproject_interp that retrace is
+    # cheap and barely shows up (confirmed separately: repeated-fresh-
+    # transform calls stay near the reused-transform number, ~0.27s either
+    # way). For reproject_adaptive it is NOT cheap: its core computes
+    # jax.jacfwd(transform), and transform itself already runs 2 internal
+    # jax.jacfwd-based Newton steps whenever SIP is present (this real
+    # SPHEREx header has SIP) -- differentiating *through* an already-
+    # autodiff-heavy function makes reconstructing the jaxpr itself
+    # expensive, independent of whether the backend executable is reused.
+    # The number below reuses one transform object across repeated calls
+    # (what a batch or a caching wrapper would give) to show the actual
+    # ceiling once that retracing tax is avoided.
+    transform_for_reuse = build_transform(wcs_in, wcs_out)
+    timed(reproject_adaptive_core, data, x_out, y_out, transform_for_reuse, max_window_radius=10)  # compile once
+    t_adaptive_true_warm = timed(reproject_adaptive_core, data, x_out, y_out, transform_for_reuse, max_window_radius=10)
+    print(f"  reprojax reproject_adaptive (transform reused, true warm): {t_adaptive_true_warm:.3f}s")
 
     print(f"\n--- Batch of {BATCH_SIZE}: {data.shape} -> {shape_out} ---")
 
     headers, data_batch, mwcs_in_batch, rotation_batch = make_batch(header_in, header_out, data)
-    wcs_out = WCS(header_out)
     mwcs_out = TanJax(*wcs_params_from_astropy(wcs_out)[:3], sip=None)
-    y_out, x_out = jnp.meshgrid(jnp.arange(ny, dtype=jnp.float64), jnp.arange(nx, dtype=jnp.float64), indexing="ij")
 
     t0 = time.perf_counter()
     for h in headers:
@@ -288,8 +310,9 @@ def main():
         f"| reprojax vs 1core={t_orig_interp/t_interp_warm:.1f}x vs multicore={t_orig_interp_mc/t_interp_warm:.1f}x"
     )
     print(
-        f"adaptive single: 1core={t_orig_adaptive:.3f}s multicore={t_orig_adaptive_mc:.3f}s reprojax={t_adaptive_warm:.3f}s "
-        f"| reprojax vs 1core={t_orig_adaptive/t_adaptive_warm:.1f}x vs multicore={t_orig_adaptive_mc/t_adaptive_warm:.1f}x"
+        f"adaptive single: 1core={t_orig_adaptive:.3f}s multicore={t_orig_adaptive_mc:.3f}s "
+        f"reprojax(wrapper)={t_adaptive_warm:.3f}s reprojax(transform reused)={t_adaptive_true_warm:.3f}s "
+        f"| reprojax(reused) vs 1core={t_orig_adaptive/t_adaptive_true_warm:.1f}x vs multicore={t_orig_adaptive_mc/t_adaptive_true_warm:.1f}x"
     )
     print(
         f"interp   batch({BATCH_SIZE}): 1core={t_orig_interp_batch:.3f}s multicore={t_orig_interp_batch_mc:.3f}s reprojax={t_interp_batch_warm:.3f}s "

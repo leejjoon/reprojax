@@ -226,6 +226,14 @@ def reproject_interp(input_data, output_projection, shape_out=None, order=1):
     Returns
     -------
     array, footprint
+
+    Note
+    ----
+    Like :func:`~reprojax.adaptive.reproject_adaptive`, this calls
+    :func:`~reprojax.transform.build_transform` internally, so repeated
+    calls with an equivalent ``wcs_in``/``wcs_out`` pair reuse the same
+    transform object rather than rebuilding (and retracing) it — see that
+    function's docstring for the caching details.
     """
     data, wcs_or_header_in = input_data
     wcs_in = _as_wcs(wcs_or_header_in)

@@ -287,6 +287,34 @@ def test_unsupported_projection_raises():
 
 
 # ---------------------------------------------------------------------------
+# reproject_interp calls build_transform() internally, same as
+# reproject_adaptive -- it shares that cache automatically, with no
+# interp-specific caching code needed. Verified directly (not just inferred
+# from reading the source) since this is exactly the kind of thing that
+# silently breaks if either wrapper's internals drift apart.
+# ---------------------------------------------------------------------------
+
+
+def test_wrapper_reuses_cached_transform_across_calls():
+    build_transform.cache_clear()
+    from reprojax.transform import _TRANSFORM_CACHE
+
+    h_in = make_header((100.0, 100.0), (180.0, 30.0), 1.0, naxis=(200, 200))
+    h_out = make_header((90.0, 110.0), (180.01, 30.005), 1.2, rot_deg=8.0, naxis=(200, 200))
+    data = _random_data(h_in)
+
+    reproject_interp((data, WCS(h_in)), WCS(h_out), shape_out=(200, 200))
+    assert len(_TRANSFORM_CACHE) == 1
+
+    # Fresh WCS objects reconstructed from copies of the same headers, as a
+    # caller looping over several images against the same WCS pair would
+    # naturally produce (e.g. WCS(header) built fresh from a fits.open()
+    # each time).
+    reproject_interp((data, WCS(h_in.copy())), WCS(h_out.copy()), shape_out=(200, 200))
+    assert len(_TRANSFORM_CACHE) == 1
+
+
+# ---------------------------------------------------------------------------
 # The core is a jit-able pure function of arrays + transform.
 # ---------------------------------------------------------------------------
 

@@ -7,7 +7,10 @@ Everything astropy-facing runs once, eagerly, at build time in
 ``jit``/``vmap``/``grad``.
 """
 
+from collections import OrderedDict
+
 import jax.numpy as jnp
+from astropy.wcs.utils import wcs_to_celestial_frame
 from mapprojax.jax_projections import SinJax, TanJax
 from mapprojax.utils import apply_rotation
 
@@ -16,11 +19,34 @@ from ._sip_refine import DEFAULT_REFINE_STEPS, refine_pixel_estimate
 
 _PROVIDERS = {"TAN": TanJax, "SIN": SinJax}
 
+# build_transform's cache: keyed on the numeric content of wcs_in/wcs_out
+# (not object identity), so repeated calls with re-parsed-but-identical WCS
+# (e.g. the same header read from disk each time, or the same pointing's
+# multiple spectral channels) hit the cache too, not just calls reusing the
+# same Python WCS object. Bounded and LRU-evicted since each entry pins a
+# compiled transform closure (and jit will hold a compilation cache entry
+# keyed on its identity) in memory for as long as the cache keeps it.
+_TRANSFORM_CACHE_MAXSIZE = 32
+_TRANSFORM_CACHE = OrderedDict()
+
 
 def _mapprojax_wcs(astropy_wcs):
     code = projection_code(astropy_wcs)
     crpix, cd, crval, sip = wcs_params_from_astropy(astropy_wcs)
     return _PROVIDERS[code](crpix, cd, crval, sip=sip)
+
+
+def _sip_fingerprint(sip):
+    if sip is None:
+        return None
+    return tuple((arr.shape, arr.tobytes()) for arr in (sip.a, sip.b, sip.ap, sip.bp))
+
+
+def _wcs_fingerprint(astropy_wcs):
+    code = projection_code(astropy_wcs)
+    crpix, cd, crval, sip = wcs_params_from_astropy(astropy_wcs)
+    frame = repr(wcs_to_celestial_frame(astropy_wcs))
+    return (code, tuple(crpix), tuple(map(tuple, cd)), tuple(crval), _sip_fingerprint(sip), frame)
 
 
 def compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=DEFAULT_REFINE_STEPS):
@@ -143,8 +169,43 @@ def build_transform(wcs_in, wcs_out, sip_inverse_refine_steps=DEFAULT_REFINE_STE
     differentiate with respect to WCS parameters (CRVAL, CD, SIP
     coefficients), construct mapprojax WCS objects directly and use
     :func:`compose_transform`.
+
+    Note
+    ----
+    Results are cached on the numeric content of ``wcs_in``/``wcs_out`` (CD,
+    CRPIX, CRVAL, SIP coefficients, projection code, celestial frame) plus
+    ``sip_inverse_refine_steps`` — calling this again with an equivalent
+    WCS pair, even freshly reconstructed from the same header, returns the
+    *same* transform object rather than rebuilding it. This matters beyond
+    saving the (cheap) astropy-side work here: the returned ``transform`` is
+    passed as a static ``jax.jit`` argument by :mod:`reprojax.interp` and
+    :mod:`reprojax.adaptive`, so a fresh object forces a full retrace on the
+    next call — negligible for ``reproject_interp``, but expensive for
+    ``reproject_adaptive`` (its core differentiates *through* ``transform``,
+    and retracing an already-autodiff-heavy function, as SIP inversion is,
+    is costly regardless of whether the compiled executable ends up cached).
+    Reusing the same WCS pair across many calls (e.g. per-band exposures
+    sharing one pointing) now pays that cost once.
     """
+    cache_key = (_wcs_fingerprint(wcs_in), _wcs_fingerprint(wcs_out), sip_inverse_refine_steps)
+    cached = _TRANSFORM_CACHE.get(cache_key)
+    if cached is not None:
+        _TRANSFORM_CACHE.move_to_end(cache_key)
+        return cached
+
     mwcs_in = _mapprojax_wcs(wcs_in)
     mwcs_out = _mapprojax_wcs(wcs_out)
     rotation = jnp.asarray(frame_rotation_matrix(wcs_out, wcs_in))
-    return compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=sip_inverse_refine_steps)
+    transform = compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=sip_inverse_refine_steps)
+
+    _TRANSFORM_CACHE[cache_key] = transform
+    if len(_TRANSFORM_CACHE) > _TRANSFORM_CACHE_MAXSIZE:
+        _TRANSFORM_CACHE.popitem(last=False)
+    return transform
+
+
+def _clear_transform_cache():
+    _TRANSFORM_CACHE.clear()
+
+
+build_transform.cache_clear = _clear_transform_cache

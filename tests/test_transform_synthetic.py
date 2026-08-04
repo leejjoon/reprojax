@@ -271,3 +271,51 @@ def test_unsupported_projection_raises():
     wcs = WCS(h)
     with pytest.raises(NotImplementedError, match="AZP"):
         projection_code(wcs)
+
+
+# ---------------------------------------------------------------------------
+# build_transform caches on WCS content, not object identity: a fresh WCS
+# reconstructed from an equivalent header must reuse the same transform
+# object (this is what lets reprojax.reproject_adaptive avoid retracing on
+# every call for a repeated WCS pair — see transform.py's build_transform
+# docstring).
+# ---------------------------------------------------------------------------
+
+
+def test_build_transform_caches_on_content_not_identity():
+    build_transform.cache_clear()
+    h_in = make_header((512.0, 512.0), (180.0, 30.0), 1.0, rot_deg=7.0)
+    h_out = make_header((500.0, 500.0), (180.1, 30.1), 0.9, rot_deg=-3.0)
+
+    t1 = build_transform(WCS(h_in), WCS(h_out))
+    # Fresh WCS objects, reconstructed from copies of the same headers.
+    t2 = build_transform(WCS(h_in.copy()), WCS(h_out.copy()))
+    assert t1 is t2
+
+
+def test_build_transform_does_not_collide_on_different_wcs():
+    build_transform.cache_clear()
+    h_in = make_header((512.0, 512.0), (180.0, 30.0), 1.0, rot_deg=7.0)
+    h_out = make_header((500.0, 500.0), (180.1, 30.1), 0.9, rot_deg=-3.0)
+    h_in_shifted = h_in.copy()
+    h_in_shifted["CRVAL1"] += 0.01
+
+    t1 = build_transform(WCS(h_in), WCS(h_out))
+    t2 = build_transform(WCS(h_in_shifted), WCS(h_out))
+    assert t1 is not t2
+
+    x_in_1, y_in_1 = t1(250.0, 250.0)
+    x_in_2, y_in_2 = t2(250.0, 250.0)
+    assert not (np.isclose(float(x_in_1), float(x_in_2)) and np.isclose(float(y_in_1), float(y_in_2)))
+
+
+def test_build_transform_cache_is_bounded():
+    build_transform.cache_clear()
+    from reprojax.transform import _TRANSFORM_CACHE, _TRANSFORM_CACHE_MAXSIZE
+
+    h_out = make_header((500.0, 500.0), (180.0, 30.0), 0.9)
+    for i in range(_TRANSFORM_CACHE_MAXSIZE + 5):
+        h_in = make_header((512.0, 512.0), (180.0 + i * 0.01, 30.0), 1.0)
+        build_transform(WCS(h_in), WCS(h_out))
+
+    assert len(_TRANSFORM_CACHE) <= _TRANSFORM_CACHE_MAXSIZE

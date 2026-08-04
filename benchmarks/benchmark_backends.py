@@ -209,31 +209,19 @@ def main():
     )
     print(f"  original reproject_adaptive (parallel, tuned block_size): {t_orig_adaptive_mc:.3f}s")
 
+    # build_transform() caches on the numeric content of (wcs_in, wcs_out,
+    # sip_inverse_refine_steps), so this repeated call returns the *same*
+    # transform object the wrapper built internally last time rather than
+    # rebuilding it -- avoiding a full jit retrace on every call. That
+    # retrace was cheap for reproject_interp (~0.27s either way) but not for
+    # reproject_adaptive, whose core differentiates *through* transform
+    # (jax.jacfwd), and transform itself already runs 2 internal
+    # jax.jacfwd-based Newton steps whenever SIP is present (this real
+    # SPHEREx header has SIP) -- retracing that doubly-nested autodiff graph
+    # used to cost ~4s per call before the cache existed.
     t_adaptive_compile = timed(reprojax.reproject_adaptive, (data, wcs_in), header_out, max_window_radius=10)
     t_adaptive_warm = timed(reprojax.reproject_adaptive, (data, wcs_in), header_out, max_window_radius=10)
-    print(f"  reprojax reproject_adaptive (wrapper, repeated calls):    {t_adaptive_warm:.3f}s warm ({t_adaptive_compile:.3f}s incl. compile)")
-
-    # The wrapper's "warm" number above is NOT the algorithm's true warm
-    # speed for reproject_adaptive specifically: reprojax.reproject_adaptive
-    # calls build_transform() fresh internally on every invocation, and the
-    # resulting closure is a *static* jit argument, so each call retraces
-    # the jaxpr from scratch even though the compiled executable itself may
-    # still be cached at a lower level. For reproject_interp that retrace is
-    # cheap and barely shows up (confirmed separately: repeated-fresh-
-    # transform calls stay near the reused-transform number, ~0.27s either
-    # way). For reproject_adaptive it is NOT cheap: its core computes
-    # jax.jacfwd(transform), and transform itself already runs 2 internal
-    # jax.jacfwd-based Newton steps whenever SIP is present (this real
-    # SPHEREx header has SIP) -- differentiating *through* an already-
-    # autodiff-heavy function makes reconstructing the jaxpr itself
-    # expensive, independent of whether the backend executable is reused.
-    # The number below reuses one transform object across repeated calls
-    # (what a batch or a caching wrapper would give) to show the actual
-    # ceiling once that retracing tax is avoided.
-    transform_for_reuse = build_transform(wcs_in, wcs_out)
-    timed(reproject_adaptive_core, data, x_out, y_out, transform_for_reuse, max_window_radius=10)  # compile once
-    t_adaptive_true_warm = timed(reproject_adaptive_core, data, x_out, y_out, transform_for_reuse, max_window_radius=10)
-    print(f"  reprojax reproject_adaptive (transform reused, true warm): {t_adaptive_true_warm:.3f}s")
+    print(f"  reprojax reproject_adaptive:                 {t_adaptive_warm:.3f}s warm ({t_adaptive_compile:.3f}s incl. compile)")
 
     print(f"\n--- Batch of {BATCH_SIZE}: {data.shape} -> {shape_out} ---")
 
@@ -310,9 +298,8 @@ def main():
         f"| reprojax vs 1core={t_orig_interp/t_interp_warm:.1f}x vs multicore={t_orig_interp_mc/t_interp_warm:.1f}x"
     )
     print(
-        f"adaptive single: 1core={t_orig_adaptive:.3f}s multicore={t_orig_adaptive_mc:.3f}s "
-        f"reprojax(wrapper)={t_adaptive_warm:.3f}s reprojax(transform reused)={t_adaptive_true_warm:.3f}s "
-        f"| reprojax(reused) vs 1core={t_orig_adaptive/t_adaptive_true_warm:.1f}x vs multicore={t_orig_adaptive_mc/t_adaptive_true_warm:.1f}x"
+        f"adaptive single: 1core={t_orig_adaptive:.3f}s multicore={t_orig_adaptive_mc:.3f}s reprojax={t_adaptive_warm:.3f}s "
+        f"| reprojax vs 1core={t_orig_adaptive/t_adaptive_warm:.1f}x vs multicore={t_orig_adaptive_mc/t_adaptive_warm:.1f}x"
     )
     print(
         f"interp   batch({BATCH_SIZE}): 1core={t_orig_interp_batch:.3f}s multicore={t_orig_interp_batch_mc:.3f}s reprojax={t_interp_batch_warm:.3f}s "

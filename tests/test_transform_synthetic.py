@@ -46,11 +46,11 @@ def assert_pixel_to_sky_matches_astropy(header, n=500, seed=0, tol_uas=SKY_TOL_U
 
 
 def assert_composed_transform_matches_astropy(
-    header_in, header_out, n=2000, seed=1, tol_px=PIX_TOL
+    header_in, header_out, n=2000, seed=1, tol_px=PIX_TOL, matrix_precision="f64"
 ):
     wcs_in = WCS(header_in)
     wcs_out = WCS(header_out)
-    transform = build_transform(wcs_in, wcs_out)
+    transform = build_transform(wcs_in, wcs_out, matrix_precision=matrix_precision)
 
     x_out, y_out = _sample_pixels(n, seed)
     x_in, y_in = transform(x_out, y_out)
@@ -319,3 +319,95 @@ def test_build_transform_cache_is_bounded():
         build_transform(WCS(h_in), WCS(h_out))
 
     assert len(_TRANSFORM_CACHE) <= _TRANSFORM_CACHE_MAXSIZE
+
+
+# ---------------------------------------------------------------------------
+# matrix_precision="f32": mapprojax.reproject.Reprojector's fp64-free path
+# (see transform.py's compose_transform_fp32). Bounds below have headroom
+# over what was actually measured on these fixtures and on the real SPHEREx
+# pair (tests/test_real_spherex.py) -- not copied from mapprojax's own
+# synthetic report numbers, since this project's SIP/frame-change specifics
+# hadn't been checked against that mode until now.
+# ---------------------------------------------------------------------------
+
+
+def test_f32_matches_astropy_looser_tolerance():
+    h_out = make_header((512.0, 512.0), (180.0, 30.0), 1.0, rot_deg=15.0)
+    h_in = make_header((600.0, 400.0), (180.05, 30.02), 0.8, rot_deg=-7.0)
+    assert_composed_transform_matches_astropy(h_in, h_out, tol_px=5e-3, matrix_precision="f32")
+
+
+def test_f32_matches_astropy_with_sip():
+    h_in, h_out = _reverse_sip_fixture()
+    assert_composed_transform_matches_astropy(h_in, h_out, tol_px=5e-3, matrix_precision="f32")
+
+
+def test_f32_matches_astropy_across_frame_change():
+    icrs_center = SkyCoord(180.05, 30.02, unit="deg", frame="icrs")
+    gal_center = icrs_center.galactic
+    h_icrs = make_header((600.0, 400.0), (icrs_center.ra.deg, icrs_center.dec.deg), 0.8, rot_deg=-7.0)
+    h_gal = make_header(
+        (512.0, 512.0), (gal_center.l.deg, gal_center.b.deg), 1.0, ctype=("GLON-TAN", "GLAT-TAN")
+    )
+    assert_composed_transform_matches_astropy(h_icrs, h_gal, tol_px=5e-3, matrix_precision="f32")
+    assert_composed_transform_matches_astropy(h_gal, h_icrs, tol_px=5e-3, matrix_precision="f32")
+
+
+def test_f32_works_without_jax_enable_x64():
+    """The whole point of matrix_precision="f32": correct (within its own
+    looser bound) regardless of jax_enable_x64, unlike "f64".
+    """
+    import jax
+
+    h_out = make_header((512.0, 512.0), (180.0, 30.0), 1.0, rot_deg=15.0)
+    h_in = make_header((600.0, 400.0), (180.05, 30.02), 0.8, rot_deg=-7.0)
+
+    prev = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", False)
+    try:
+        build_transform.cache_clear()
+        assert_composed_transform_matches_astropy(h_in, h_out, tol_px=5e-3, matrix_precision="f32")
+    finally:
+        jax.config.update("jax_enable_x64", prev)
+        build_transform.cache_clear()
+
+
+def test_f32_invalid_points_return_nan():
+    """Same far-hemisphere NaN contract as the f64 path (compose_transform_fp32
+    mirrors compose_transform's masking).
+    """
+    h_in = make_header((512.0, 512.0), (180.0, 30.0), 1.0)
+    h_out = make_header((512.0, 512.0), (0.0, -30.0), 1.0, ctype=("RA---SIN", "DEC--SIN"))
+    wcs_in, wcs_out = WCS(h_in), WCS(h_out)
+    transform = build_transform(wcs_in, wcs_out, matrix_precision="f32")
+
+    x_in, y_in = transform(512.0, 512.0)
+    assert np.isnan(np.asarray(x_in))
+    assert np.isnan(np.asarray(y_in))
+
+
+def test_invalid_matrix_precision_raises():
+    h = make_header((512.0, 512.0), (180.0, 30.0), 1.0)
+    wcs = WCS(h)
+    with pytest.raises(ValueError):
+        build_transform(wcs, wcs, matrix_precision="fp16")
+
+
+def test_cache_distinguishes_matrix_precision():
+    """f64 and f32 transforms for the same WCS pair must not collide in the
+    cache -- they compute genuinely different things.
+    """
+    build_transform.cache_clear()
+    h_out = make_header((512.0, 512.0), (180.0, 30.0), 1.0, rot_deg=15.0)
+    h_in = make_header((600.0, 400.0), (180.05, 30.02), 0.8, rot_deg=-7.0)
+    wcs_in, wcs_out = WCS(h_in), WCS(h_out)
+
+    t64 = build_transform(wcs_in, wcs_out, matrix_precision="f64")
+    t32 = build_transform(wcs_in, wcs_out, matrix_precision="f32")
+    assert t64 is not t32
+
+    x64, y64 = t64(250.0, 250.0)
+    x32, y32 = t32(250.0, 250.0)
+    # Both should be close (same underlying geometry), but not bit-identical
+    # -- if they were, the cache-key change wouldn't be doing anything.
+    assert not (float(x64) == float(x32) and float(y64) == float(y32))

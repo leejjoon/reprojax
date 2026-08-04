@@ -257,6 +257,7 @@ def reproject_adaptive(
     sample_region_width=4.0,
     max_window_radius=10,
     block_size=None,
+    matrix_precision="f64",
 ):
     """Reproject an ``(array, WCS-or-header)`` pair onto ``output_projection``
     using the DeForest (2004) adaptive, anti-aliased algorithm.
@@ -274,6 +275,12 @@ def reproject_adaptive(
         (a Header's NAXIS1/NAXIS2, or a WCS with ``array_shape`` set).
     kernel, kernel_width, sample_region_width, max_window_radius, block_size
         See :func:`reproject_adaptive_core`.
+    matrix_precision : {"f64", "f32"}
+        See :func:`~reprojax.transform.build_transform`. ``"f32"`` needs
+        no ``jax_enable_x64`` and is faster on GPUs where float64
+        throughput is much lower than float32's, at reduced accuracy
+        (~1e-4 px for typical overlapping-field reprojections; see that
+        function's docstring for the detailed tradeoff).
 
     Returns
     -------
@@ -295,7 +302,7 @@ def reproject_adaptive(
         jnp.arange(ny, dtype=jnp.float64), jnp.arange(nx, dtype=jnp.float64), indexing="ij"
     )
 
-    transform = build_transform(wcs_in, wcs_out)
+    transform = build_transform(wcs_in, wcs_out, matrix_precision=matrix_precision)
     data = jnp.asarray(_to_native_byte_order(data))
     return reproject_adaptive_core(
         data,

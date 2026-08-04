@@ -207,7 +207,7 @@ def _shape_from_header(wcs_or_header):
     return None
 
 
-def reproject_interp(input_data, output_projection, shape_out=None, order=1):
+def reproject_interp(input_data, output_projection, shape_out=None, order=1, matrix_precision="f64"):
     """Reproject an ``(array, WCS-or-header)`` pair onto ``output_projection``.
 
     Matches ``reproject.reproject_interp``'s call and return shape for the
@@ -222,6 +222,12 @@ def reproject_interp(input_data, output_projection, shape_out=None, order=1):
         (a Header's NAXIS1/NAXIS2, or a WCS with ``array_shape`` set).
     order : int
         0 (nearest) or 1 (bilinear).
+    matrix_precision : {"f64", "f32"}
+        See :func:`~reprojax.transform.build_transform`. ``"f32"`` needs
+        no ``jax_enable_x64`` and is faster on GPUs where float64
+        throughput is much lower than float32's, at reduced accuracy
+        (~1e-4 px for typical overlapping-field reprojections; see that
+        function's docstring for the detailed tradeoff).
 
     Returns
     -------
@@ -251,6 +257,6 @@ def reproject_interp(input_data, output_projection, shape_out=None, order=1):
         jnp.arange(ny, dtype=jnp.float64), jnp.arange(nx, dtype=jnp.float64), indexing="ij"
     )
 
-    transform = build_transform(wcs_in, wcs_out)
+    transform = build_transform(wcs_in, wcs_out, matrix_precision=matrix_precision)
     data = jnp.asarray(_to_native_byte_order(data))
     return reproject_interp_core(data, x_out, y_out, transform, order=order)

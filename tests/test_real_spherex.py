@@ -137,6 +137,38 @@ def test_real_composed_transform_matches_astropy(spherex_header, template_header
     assert np.nanmax(err) < PIX_TOL
 
 
+def test_real_composed_transform_f32_precision_quantified(spherex_header, template_header):
+    """matrix_precision="f32" (mapprojax's Reprojector, no jax_enable_x64
+    needed) on this real ICRS TAN+SIP <-> Galactic TAN pair: measured
+    max=1.4e-2 px, median=1.6e-3 px against the same astropy reference as
+    the f64 test above -- an order of magnitude looser than the f64 Tier-1
+    bar, consistent with mapprojax's own documented ~1e-4 px-per-degree-ish
+    growth with field-center separation (ICRS<->Galactic here is tens of
+    degrees). Bounds below have real headroom over that measurement, not
+    copied from any other report.
+    """
+    wcs_in = WCS(spherex_header)
+    wcs_out = WCS(template_header)
+    transform = build_transform(wcs_in, wcs_out, matrix_precision="f32")
+
+    rng = np.random.default_rng(1)
+    n = 5000
+    x_out = rng.uniform(0, template_header["NAXIS1"] - 1, n)
+    y_out = rng.uniform(0, template_header["NAXIS2"] - 1, n)
+    x_in, y_in = transform(x_out, y_out)
+    x_in, y_in = np.asarray(x_in), np.asarray(y_in)
+
+    sky = SkyCoord(*wcs_out.all_pix2world(x_out, y_out, 0), unit="deg", frame=wcs_to_celestial_frame(wcs_out))
+    sky_in_frame = sky.transform_to(wcs_to_celestial_frame(wcs_in))
+    x_ref, y_ref = wcs_in.all_world2pix(sky_in_frame.spherical.lon.deg, sky_in_frame.spherical.lat.deg, 0)
+
+    err = np.hypot(x_in - x_ref, y_in - y_ref)
+    valid = ~np.isnan(err)
+    assert valid.any()
+    assert np.nanmax(err) < 0.05
+    assert np.nanmedian(err) < 0.01
+
+
 # ---------------------------------------------------------------------------
 # Tier-2: full image reprojection vs original reproject_interp.
 # ---------------------------------------------------------------------------

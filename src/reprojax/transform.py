@@ -12,12 +12,18 @@ from collections import OrderedDict
 import jax.numpy as jnp
 from astropy.wcs.utils import wcs_to_celestial_frame
 from mapprojax.jax_projections import SinJax, TanJax
+from mapprojax.projections import Sin, Tan
+from mapprojax.reproject import Reprojector
 from mapprojax.utils import apply_rotation
 
 from ._astropy_wcs import frame_rotation_matrix, projection_code, wcs_params_from_astropy
 from ._sip_refine import DEFAULT_REFINE_STEPS, refine_pixel_estimate
 
 _PROVIDERS = {"TAN": TanJax, "SIN": SinJax}
+#: NumPy-backed (not JAX) counterparts, for Reprojector/compose_relative_rotation --
+#: see _mapprojax_wcs_numpy.
+_PROVIDERS_NUMPY = {"TAN": Tan, "SIN": Sin}
+MATRIX_PRECISIONS = ("f64", "f32")
 
 # build_transform's cache: keyed on the numeric content of wcs_in/wcs_out
 # (not object identity), so repeated calls with re-parsed-but-identical WCS
@@ -34,6 +40,20 @@ def _mapprojax_wcs(astropy_wcs):
     code = projection_code(astropy_wcs)
     crpix, cd, crval, sip = wcs_params_from_astropy(astropy_wcs)
     return _PROVIDERS[code](crpix, cd, crval, sip=sip)
+
+
+def _mapprojax_wcs_numpy(astropy_wcs):
+    """Like :func:`_mapprojax_wcs`, but a plain NumPy-backed mapprojax WCS
+    (``Tan``/``Sin``) instead of the JAX one. Needed for
+    :class:`mapprojax.reproject.Reprojector`, whose one-time rotation
+    composition must run in true float64 regardless of
+    ``jax_enable_x64`` -- a JAX WCS's own rotation matrix may already be
+    truncated to float32 if x64 was never enabled (see
+    ``compose_relative_rotation``'s docstring in mapprojax).
+    """
+    code = projection_code(astropy_wcs)
+    crpix, cd, crval, sip = wcs_params_from_astropy(astropy_wcs)
+    return _PROVIDERS_NUMPY[code](crpix, cd, crval, sip=sip)
 
 
 def _sip_fingerprint(sip):
@@ -135,7 +155,68 @@ def compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=DEFA
     return transform
 
 
-def build_transform(wcs_in, wcs_out, sip_inverse_refine_steps=DEFAULT_REFINE_STEPS):
+def compose_transform_fp32(reprojector, sip_inverse_refine_steps=DEFAULT_REFINE_STEPS):
+    """Build a ``PixelTransform`` from a :class:`mapprojax.reproject.Reprojector`
+    -- the fp64-free counterpart of :func:`compose_transform`.
+
+    The celestial<->native rotation runs once, in true float64, at
+    ``Reprojector`` construction time (not per pixel -- see its
+    docstring); every per-pixel call after that (``pix_to_native -> apply
+    the composed rotation -> native_to_pix``) runs in float32,
+    independent of ``jax_enable_x64``.
+
+    Note
+    ----
+    Unlike :func:`compose_transform`, this is *not* differentiable with
+    respect to either WCS's ``crval``: ``Reprojector``'s rotation is
+    precomputed outside JAX's trace (see its docstring). It remains
+    differentiable with respect to the output pixel coordinates
+    (``x_out``, ``y_out``) -- all ``reproject_adaptive``'s
+    ``jax.jacfwd`` needs -- and, through the target leg, with respect to
+    ``crpix``/``cd``/SIP coefficients.
+
+    Parameters
+    ----------
+    reprojector : mapprojax.reproject.Reprojector
+        Maps output pixels (its ``wcs_src``) to input pixels (its
+        ``wcs_tgt``) -- see :func:`build_transform`.
+    sip_inverse_refine_steps : int
+        See :func:`build_transform`. Applied only when the target leg has
+        SIP.
+
+    Returns
+    -------
+    PixelTransform
+    """
+    tgt_leg = reprojector.tgt_leg
+    refine_steps = sip_inverse_refine_steps if tgt_leg.sip is not None else 0
+
+    def transform(x_out, y_out):
+        x_out = jnp.asarray(x_out)
+        y_out = jnp.asarray(y_out)
+
+        xn, yn, zn = reprojector.pix_to_native_tgt(x_out, y_out)
+        valid = xn > 0
+
+        # Same far-hemisphere masking as compose_transform -- see its
+        # comment for why this substitutes a safe direction before
+        # native_to_pix/refinement rather than masking the result after.
+        xn_safe = jnp.where(valid, xn, 1.0)
+        yn_safe = jnp.where(valid, yn, 0.0)
+        zn_safe = jnp.where(valid, zn, 0.0)
+        x_in, y_in = tgt_leg.native_to_pix(xn_safe, yn_safe, zn_safe)
+
+        if refine_steps > 0:
+            x_in, y_in = refine_pixel_estimate(tgt_leg, x_in, y_in, xn_safe, yn_safe, zn_safe, n_steps=refine_steps)
+
+        x_in = jnp.where(valid, x_in, jnp.nan)
+        y_in = jnp.where(valid, y_in, jnp.nan)
+        return x_in, y_in
+
+    return transform
+
+
+def build_transform(wcs_in, wcs_out, sip_inverse_refine_steps=DEFAULT_REFINE_STEPS, matrix_precision="f64"):
     """Build a ``PixelTransform`` mapping output pixels to input pixels.
 
     The composed pipeline, per output pixel: output pixel -> output-frame
@@ -155,6 +236,24 @@ def build_transform(wcs_in, wcs_out, sip_inverse_refine_steps=DEFAULT_REFINE_STE
         0.03 px, while a couple of Newton steps against the (exact) forward
         polynomial brings that to ~1e-7 px. Set to 0 to disable (matching
         the plain AP/BP evaluation used before this was diagnosed).
+    matrix_precision : {"f64", "f32"}
+        - ``"f64"`` (default): current behavior, unchanged -- builds
+          ``mwcs_in``/``mwcs_out`` as JAX WCS objects and composes the
+          rotation via :func:`compose_transform`, entirely in float64
+          when ``jax_enable_x64`` is enabled (required for correctness;
+          see :mod:`reprojax`'s and mapprojax's warnings if it isn't).
+        - ``"f32"``: uses ``mapprojax.reproject.Reprojector`` (see
+          mapprojax's ``fo64_report_and_plan.md``, Phase 1) to compose
+          the two WCSes' rotations into one matrix, once, in true
+          float64 on the host, independent of ``jax_enable_x64``; every
+          per-pixel call then runs in float32. No ``jax_enable_x64``
+          needed, and faster on GPUs where float64 throughput is much
+          lower than float32's. Less accurate than ``"f64"`` -- ~1e-4 px
+          for typical overlapping-field reprojections at arcsecond plate
+          scales, growing with field-center separation and with finer
+          plate scales (see mapprojax's ``Reprojector`` docstring); not
+          differentiable with respect to either WCS's ``crval`` (see
+          :func:`compose_transform_fp32`).
 
     Returns
     -------
@@ -187,16 +286,26 @@ def build_transform(wcs_in, wcs_out, sip_inverse_refine_steps=DEFAULT_REFINE_STE
     Reusing the same WCS pair across many calls (e.g. per-band exposures
     sharing one pointing) now pays that cost once.
     """
-    cache_key = (_wcs_fingerprint(wcs_in), _wcs_fingerprint(wcs_out), sip_inverse_refine_steps)
+    if matrix_precision not in MATRIX_PRECISIONS:
+        raise ValueError(f"matrix_precision must be one of {MATRIX_PRECISIONS}, got {matrix_precision!r}")
+
+    cache_key = (_wcs_fingerprint(wcs_in), _wcs_fingerprint(wcs_out), sip_inverse_refine_steps, matrix_precision)
     cached = _TRANSFORM_CACHE.get(cache_key)
     if cached is not None:
         _TRANSFORM_CACHE.move_to_end(cache_key)
         return cached
 
-    mwcs_in = _mapprojax_wcs(wcs_in)
-    mwcs_out = _mapprojax_wcs(wcs_out)
-    rotation = jnp.asarray(frame_rotation_matrix(wcs_out, wcs_in))
-    transform = compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=sip_inverse_refine_steps)
+    if matrix_precision == "f32":
+        wcs_in_np = _mapprojax_wcs_numpy(wcs_in)
+        wcs_out_np = _mapprojax_wcs_numpy(wcs_out)
+        frame_rotation = frame_rotation_matrix(wcs_out, wcs_in)
+        reprojector = Reprojector(wcs_out_np, wcs_in_np, frame_rotation=frame_rotation, matrix_precision="f32")
+        transform = compose_transform_fp32(reprojector, sip_inverse_refine_steps=sip_inverse_refine_steps)
+    else:
+        mwcs_in = _mapprojax_wcs(wcs_in)
+        mwcs_out = _mapprojax_wcs(wcs_out)
+        rotation = jnp.asarray(frame_rotation_matrix(wcs_out, wcs_in))
+        transform = compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=sip_inverse_refine_steps)
 
     _TRANSFORM_CACHE[cache_key] = transform
     if len(_TRANSFORM_CACHE) > _TRANSFORM_CACHE_MAXSIZE:

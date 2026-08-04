@@ -1,0 +1,208 @@
+"""Compare wall-clock performance: original reproject vs reprojax, across
+JAX backends (CPU / CUDA), for both reproject_interp and reproject_adaptive,
+single-image and batched.
+
+JAX picks its backend at process start (from JAX_PLATFORMS or whatever
+accelerator is visible) and doesn't support switching mid-process, so this
+script is meant to be run twice as separate processes:
+
+    python benchmarks/benchmark_backends.py                  # default backend (GPU if present)
+    JAX_PLATFORMS=cpu python benchmarks/benchmark_backends.py # forced CPU
+
+Each run reports reprojax's numbers for whichever backend it's running
+under, plus the original `reproject` package's numbers (which don't depend
+on JAX at all) for reference.
+
+Workload: the real SPHEREx L2b fixture (2040x2040, TAN+SIP, ICRS) onto its
+real Galactic TAN template (1201x1201) -- see tests/data/ and
+tests/test_real_spherex.py. The batch is `BATCH_SIZE` synthetic exposures
+at the same resolution (real data, repeated with slightly jittered
+pointing, since a batch of independent real SPHEREx exposures with a
+shared template isn't available here), reprojected onto the same template
+in one call.
+"""
+
+import time
+from pathlib import Path
+
+import jax
+
+jax.config.update("jax_enable_x64", True)
+
+import jax.numpy as jnp
+import numpy as np
+from astropy.io import fits
+from astropy.wcs import WCS
+from mapprojax.jax_projections import TanJax
+from mapprojax.sip import Sip
+from reproject import reproject_interp as original_reproject_interp
+from reproject.adaptive import reproject_adaptive as original_reproject_adaptive
+
+import reprojax
+from reprojax._astropy_wcs import frame_rotation_matrix, wcs_params_from_astropy
+from reprojax.adaptive import reproject_adaptive_core
+from reprojax.interp import reproject_interp_core
+from reprojax.transform import compose_transform
+
+DATA_DIR = Path(__file__).parent.parent / "tests" / "data"
+BATCH_SIZE = 8
+# Vmapping reproject_adaptive_core over a batch multiplies its per-pixel
+# (2*max_window_radius+1)^2 window by the batch size; at max_window_radius=10
+# (used for the single-image case below) an 8-exposure batch at this
+# resolution needs ~44GB, more than one GPU here has (32GB). A smaller
+# window is a legitimate, real tuning choice (it only needs to cover the
+# actual local downsampling factor, which is modest for this real pair) --
+# not a benchmark-only shortcut -- but is called out here since it differs
+# from the single-image number's window size.
+BATCH_ADAPTIVE_MAX_WINDOW_RADIUS = 6
+
+
+def load_fixture():
+    with fits.open(DATA_DIR / "spherex_l2b_v20.fits") as hdul:
+        data = np.asarray(hdul[0].data, dtype=np.float32)
+        header_in = hdul[0].header.copy()
+    header_out = fits.Header.fromtextfile(DATA_DIR / "galactic_template_header.fits")
+    return data, header_in, header_out
+
+
+def make_batch(header_in, header_out, data, n=BATCH_SIZE, seed=0):
+    """n copies of the real exposure at slightly jittered pointing (real
+    independent SPHEREx exposures sharing one output template aren't
+    available in this fixture set) -- same resolution and SIP as the real
+    data, which is what matters for a throughput comparison.
+    """
+    rng = np.random.default_rng(seed)
+    headers = []
+    for _ in range(n):
+        h = header_in.copy()
+        h["CRVAL1"] = header_in["CRVAL1"] + rng.uniform(-3, 3) / 3600.0
+        h["CRVAL2"] = header_in["CRVAL2"] + rng.uniform(-3, 3) / 3600.0
+        headers.append(h)
+    data_batch = jnp.asarray(np.stack([data] * n))
+
+    wcs_out = WCS(header_out)
+    crpixs, cds, crvals, sips, rotations = [], [], [], [], []
+    for h in headers:
+        wcs_in = WCS(h)
+        crpix, cd, crval, sip = wcs_params_from_astropy(wcs_in)
+        crpixs.append(crpix)
+        cds.append(cd)
+        crvals.append(crval)
+        sips.append(sip)
+        rotations.append(frame_rotation_matrix(wcs_out, wcs_in))
+
+    sip_batch = Sip(
+        a=jnp.stack([jnp.asarray(s.a) for s in sips]),
+        b=jnp.stack([jnp.asarray(s.b) for s in sips]),
+        ap=jnp.stack([jnp.asarray(s.ap) for s in sips]),
+        bp=jnp.stack([jnp.asarray(s.bp) for s in sips]),
+    )
+    mwcs_in_batch = TanJax(jnp.asarray(crpixs), jnp.asarray(cds), jnp.asarray(crvals), sip=sip_batch)
+    rotation_batch = jnp.stack([jnp.asarray(r) for r in rotations])
+    return headers, data_batch, mwcs_in_batch, rotation_batch
+
+
+def reproject_adaptive_batched(data_batch, mwcs_in_batch, mwcs_out, rotation_batch, x_out, y_out, **kwargs):
+    """Same jax.vmap recipe as reprojax.interp.reproject_interp_batched,
+    for reproject_adaptive_core (not yet a library-level batched entry
+    point -- see reprojax/interp.py's reproject_interp_batched docstring
+    for the general pattern this follows).
+    """
+    def _single(data, mwcs_in, rotation):
+        transform = compose_transform(mwcs_in, mwcs_out, rotation)
+        return reproject_adaptive_core(data, x_out, y_out, transform, **kwargs)
+
+    return jax.vmap(_single, in_axes=(0, 0, 0))(data_batch, mwcs_in_batch, rotation_batch)
+
+
+def timed(fn, *args, **kwargs):
+    t0 = time.perf_counter()
+    result = fn(*args, **kwargs)
+    if hasattr(result, "block_until_ready"):
+        result.block_until_ready()
+    elif isinstance(result, tuple) and hasattr(result[0], "block_until_ready"):
+        result[0].block_until_ready()
+    return time.perf_counter() - t0
+
+
+def main():
+    backend = jax.default_backend()
+    print(f"=== JAX backend: {backend} ({jax.devices()}) ===\n")
+
+    data, header_in, header_out = load_fixture()
+    wcs_in = WCS(header_in)
+    shape_out = (header_out["NAXIS2"], header_out["NAXIS1"])
+    ny, nx = shape_out
+
+    print(f"--- Single image: {data.shape} -> {shape_out} ---")
+
+    t_orig_interp = timed(original_reproject_interp, (data, wcs_in), header_out, shape_out=shape_out, order="bilinear")
+    print(f"  original reproject_interp:        {t_orig_interp:.3f}s")
+
+    t_interp_compile = timed(reprojax.reproject_interp, (data, wcs_in), header_out)
+    t_interp_warm = timed(reprojax.reproject_interp, (data, wcs_in), header_out)
+    print(f"  reprojax reproject_interp:        {t_interp_warm:.3f}s warm ({t_interp_compile:.3f}s incl. compile)")
+
+    t_orig_adaptive = timed(original_reproject_adaptive, (data, wcs_in), header_out, shape_out=shape_out)
+    print(f"  original reproject_adaptive:      {t_orig_adaptive:.3f}s")
+
+    t_adaptive_compile = timed(reprojax.reproject_adaptive, (data, wcs_in), header_out, max_window_radius=10)
+    t_adaptive_warm = timed(reprojax.reproject_adaptive, (data, wcs_in), header_out, max_window_radius=10)
+    print(f"  reprojax reproject_adaptive:      {t_adaptive_warm:.3f}s warm ({t_adaptive_compile:.3f}s incl. compile)")
+
+    print(f"\n--- Batch of {BATCH_SIZE}: {data.shape} -> {shape_out} ---")
+
+    headers, data_batch, mwcs_in_batch, rotation_batch = make_batch(header_in, header_out, data)
+    wcs_out = WCS(header_out)
+    mwcs_out = TanJax(*wcs_params_from_astropy(wcs_out)[:3], sip=None)
+    y_out, x_out = jnp.meshgrid(jnp.arange(ny, dtype=jnp.float64), jnp.arange(nx, dtype=jnp.float64), indexing="ij")
+
+    t0 = time.perf_counter()
+    for h in headers:
+        original_reproject_interp((data, WCS(h)), header_out, shape_out=shape_out, order="bilinear")
+    t_orig_interp_batch = time.perf_counter() - t0
+    print(f"  original reproject_interp (looped):   {t_orig_interp_batch:.3f}s")
+
+    jitted_interp_batch = jax.jit(reprojax.reproject_interp_batched)
+    t_interp_batch_compile = timed(jitted_interp_batch, data_batch, mwcs_in_batch, mwcs_out, rotation_batch, x_out, y_out)
+    t_interp_batch_warm = timed(jitted_interp_batch, data_batch, mwcs_in_batch, mwcs_out, rotation_batch, x_out, y_out)
+    print(f"  reprojax reproject_interp_batched:     {t_interp_batch_warm:.3f}s warm ({t_interp_batch_compile:.3f}s incl. compile)")
+
+    t0 = time.perf_counter()
+    for h in headers:
+        original_reproject_adaptive((data, WCS(h)), header_out, shape_out=shape_out)
+    t_orig_adaptive_batch = time.perf_counter() - t0
+    print(f"  original reproject_adaptive (looped): {t_orig_adaptive_batch:.3f}s")
+
+    jitted_adaptive_batch = jax.jit(reproject_adaptive_batched, static_argnames=("max_window_radius",))
+    t_adaptive_batch_compile = timed(
+        jitted_adaptive_batch,
+        data_batch,
+        mwcs_in_batch,
+        mwcs_out,
+        rotation_batch,
+        x_out,
+        y_out,
+        max_window_radius=BATCH_ADAPTIVE_MAX_WINDOW_RADIUS,
+    )
+    t_adaptive_batch_warm = timed(
+        jitted_adaptive_batch,
+        data_batch,
+        mwcs_in_batch,
+        mwcs_out,
+        rotation_batch,
+        x_out,
+        y_out,
+        max_window_radius=BATCH_ADAPTIVE_MAX_WINDOW_RADIUS,
+    )
+    print(f"  reprojax reproject_adaptive (vmapped): {t_adaptive_batch_warm:.3f}s warm ({t_adaptive_batch_compile:.3f}s incl. compile)")
+
+    print("\n=== summary (backend=%s) ===" % backend)
+    print(f"interp   single: orig={t_orig_interp:.3f}s reprojax_warm={t_interp_warm:.3f}s speedup={t_orig_interp/t_interp_warm:.1f}x")
+    print(f"adaptive single: orig={t_orig_adaptive:.3f}s reprojax_warm={t_adaptive_warm:.3f}s speedup={t_orig_adaptive/t_adaptive_warm:.1f}x")
+    print(f"interp   batch({BATCH_SIZE}): orig={t_orig_interp_batch:.3f}s reprojax_warm={t_interp_batch_warm:.3f}s speedup={t_orig_interp_batch/t_interp_batch_warm:.1f}x")
+    print(f"adaptive batch({BATCH_SIZE}): orig={t_orig_adaptive_batch:.3f}s reprojax_warm={t_adaptive_batch_warm:.3f}s speedup={t_orig_adaptive_batch/t_adaptive_batch_warm:.1f}x")
+
+
+if __name__ == "__main__":
+    main()

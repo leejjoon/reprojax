@@ -70,7 +70,21 @@ def refine_pixel_estimate(mwcs, x0, y0, xn_target, yn_target, zn_target, n_steps
         # to differentiating through jacfwd at an exact geometric symmetry.
         damping = 1e-8 * jnp.trace(jtj)
         jtj = jtj + damping * jnp.eye(2, dtype=jtj.dtype)
-        return xy - jnp.linalg.solve(jtj, jtr)
+
+        # Closed-form 2x2 solve (Cramer's rule) instead of jnp.linalg.solve:
+        # mathematically exact for a 2x2 system (not an approximation), and
+        # avoids a severe JAX/XLA-CPU bottleneck -- vmap over
+        # jnp.linalg.solve does not lower to a vectorized batched kernel on
+        # CPU, costing ~1500-3000x a closed-form solve at this array size
+        # (measured: ~6-12s vs ~0.004s for 1.44M points). jtj is guaranteed
+        # positive-definite by construction (Gauss-Newton normal equations
+        # plus the damping above), so its determinant is always positive.
+        a, b = jtj[0, 0], jtj[0, 1]
+        c, d = jtj[1, 0], jtj[1, 1]
+        det = a * d - b * c
+        dx = (d * jtr[0] - b * jtr[1]) / det
+        dy = (-c * jtr[0] + a * jtr[1]) / det
+        return xy - jnp.array([dx, dy])
 
     def single_point(x0_i, y0_i, xn_i, yn_i, zn_i):
         target = jnp.array([xn_i, yn_i, zn_i])

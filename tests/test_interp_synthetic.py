@@ -336,25 +336,26 @@ def test_core_is_jit_able():
     )
 
     # rtol accounts for ordinary eager-vs-compiled floating-point fusion
-    # differences (~1e-14 here), not a correctness gap.
-    np.testing.assert_allclose(np.asarray(eager[0]), np.asarray(jitted[0]), rtol=1e-10, equal_nan=True)
+    # differences, not a correctness gap: with mapprojax's Newton-solved SIP
+    # inverse one value of 40000 differs by 1.2e-10 relative (4.6e-12 abs).
+    np.testing.assert_allclose(np.asarray(eager[0]), np.asarray(jitted[0]), rtol=2e-10, equal_nan=True)
     np.testing.assert_array_equal(np.asarray(eager[1]), np.asarray(jitted[1]))
 
 
 # ---------------------------------------------------------------------------
-# x64-disabled: warns, does not raise; the library never mutates global
-# JAX config.
+# x64-disabled: imports without warnings (mapprojax no longer warns on
+# import since Stage 2); the library never mutates global JAX config.
 # ---------------------------------------------------------------------------
 
 
-def test_warns_on_x64_disabled_and_never_mutates_jax_config():
+def test_imports_on_x64_disabled_without_warning_and_never_mutates_jax_config():
     result = subprocess.run(
         [sys.executable, "-c", "import warnings; warnings.simplefilter('always'); import reprojax"],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0
-    assert "64-bit precision is not enabled" in result.stderr
+    assert "64-bit precision is not enabled" not in result.stderr
 
     import reprojax
 

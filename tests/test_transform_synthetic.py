@@ -143,11 +143,11 @@ def test_sip_reverse_path_input_side():
     assert_composed_transform_matches_astropy(h_in, h_out)
 
 
-def test_sip_reverse_path_needs_newton_refinement():
-    """At this distortion magnitude, the raw AP/BP evaluation alone misses
-    the Tier-1 tolerance by more than an order of magnitude — demonstrating
-    that build_transform's default refinement (see reprojax._sip_refine) is
-    load-bearing here, not just a decorative safety margin.
+def test_sip_reverse_path_without_reprojax_refinement():
+    """At this distortion magnitude the raw AP/BP evaluation alone used to
+    miss the Tier-1 tolerance by more than an order of magnitude. mapprojax
+    now Newton-solves the SIP inverse itself, so the transform with
+    reprojax's refinement disabled (the default since then) meets it.
     """
     h_in, h_out = _reverse_sip_fixture()
     wcs_in, wcs_out = WCS(h_in), WCS(h_out)
@@ -160,7 +160,7 @@ def test_sip_reverse_path_needs_newton_refinement():
     ra, dec = wcs_out.all_pix2world(x_out, y_out, 0)
     x_ref, y_ref = wcs_in.all_world2pix(ra, dec, 0)
     err = np.hypot(x_in - x_ref, y_in - y_ref)
-    assert np.nanmax(err) > 10 * PIX_TOL
+    assert np.nanmax(err) < PIX_TOL  # measured 1.4e-8 px
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +411,18 @@ def test_cache_distinguishes_matrix_precision():
     # Both should be close (same underlying geometry), but not bit-identical
     # -- if they were, the cache-key change wouldn't be doing anything.
     assert not (float(x64) == float(x32) and float(y64) == float(y32))
+
+
+def test_forward_hemisphere_boundary_tan_excludes_sin_includes():
+    """TAN's horizon (native xn == 0) maps to infinity; SIN's unit-disc
+    boundary is a finite, valid pixel and must not be masked."""
+    import jax.numpy as jnp
+    from mapprojax.jax_projections import SinJax, TanJax
+    from reprojax.transform import _forward_hemisphere
+
+    cd = [[-1e-3, 0.0], [0.0, 1e-3]]
+    xn = jnp.asarray([-1e-3, 0.0, 1e-3])
+    tan = TanJax([0.0, 0.0], cd, [0.0, 0.0])
+    sin = SinJax([0.0, 0.0], cd, [0.0, 0.0])
+    assert list(map(bool, _forward_hemisphere(tan, xn))) == [False, False, True]
+    assert list(map(bool, _forward_hemisphere(sin, xn))) == [False, True, True]

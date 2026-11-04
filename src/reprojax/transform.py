@@ -12,7 +12,7 @@ from collections import OrderedDict
 import jax.numpy as jnp
 from astropy.wcs.utils import wcs_to_celestial_frame
 from mapprojax.jax_projections import SinJax, TanJax
-from mapprojax.projections import Sin, Tan
+from mapprojax.projections import Sin, SinMixin, Tan
 from mapprojax.reproject import Reprojector
 from mapprojax.utils import apply_rotation
 
@@ -59,7 +59,8 @@ def _mapprojax_wcs_numpy(astropy_wcs):
 def _sip_fingerprint(sip):
     if sip is None:
         return None
-    return tuple((arr.shape, arr.tobytes()) for arr in (sip.a, sip.b, sip.ap, sip.bp))
+    # A/B-only SIP (no AP/BP) is valid: a missing polynomial is part of the key.
+    return tuple(None if arr is None else (arr.shape, arr.tobytes()) for arr in (sip.a, sip.b, sip.ap, sip.bp))
 
 
 def _wcs_fingerprint(astropy_wcs):
@@ -67,6 +68,13 @@ def _wcs_fingerprint(astropy_wcs):
     crpix, cd, crval, sip = wcs_params_from_astropy(astropy_wcs)
     frame = repr(wcs_to_celestial_frame(astropy_wcs))
     return (code, tuple(crpix), tuple(map(tuple, cd)), tuple(crval), _sip_fingerprint(sip), frame)
+
+
+def _forward_hemisphere(mwcs, xn):
+    """Native-frame validity of the forward projection: TAN excludes its
+    horizon (``xn == 0`` maps to infinity); SIN includes it (the unit-disc
+    boundary is a finite, valid pixel)."""
+    return xn >= 0 if isinstance(mwcs, SinMixin) else xn > 0
 
 
 def compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=DEFAULT_REFINE_STEPS):
@@ -81,20 +89,6 @@ def compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=DEFA
     are differentiable: construct ``mwcs_in``/``mwcs_out`` inside a function
     you pass to ``jax.grad``, and gradients flow through here into whatever
     consumes the returned transform.
-
-    Note
-    ----
-    Differentiating *twice* through this function (as ``jax.grad`` of a loss
-    does when ``mwcs_in`` has SIP, since refinement's own Jacobian is itself
-    autodiff) can produce NaN at an *exact* geometric symmetry point: e.g. an
-    output pixel landing exactly on both WCSes' CRPIX with an axis-aligned CD
-    matrix, no frame rotation, and forward SIP polynomials that each depend
-    on only one of (u, v). This needs several exact coincidences at once and
-    was not observed with real WCS parameters (real CRPIX values are not
-    integers, real frame rotations are not the identity, real SIP always has
-    cross-terms) or with randomized/offset synthetic ones — see
-    tests/test_differentiability.py for both the reproduction and the
-    realistic-parameter checks that pass cleanly.
 
     Parameters
     ----------
@@ -128,7 +122,7 @@ def compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=DEFA
         # values there rather than the NaN the PixelTransform contract
         # requires for invalid points.
         xn, yn, zn = apply_rotation(mwcs_in.r_matrix, *v_in_celestial)
-        valid = xn > 0
+        valid = _forward_hemisphere(mwcs_in, xn)
 
         # Substitute the (always-safe) native pole direction at invalid
         # points *before* native_to_pix/refinement, rather than computing on
@@ -196,7 +190,7 @@ def compose_transform_fp32(reprojector, sip_inverse_refine_steps=DEFAULT_REFINE_
         y_out = jnp.asarray(y_out)
 
         xn, yn, zn = reprojector.pix_to_native_tgt(x_out, y_out)
-        valid = xn > 0
+        valid = _forward_hemisphere(tgt_leg, xn)
 
         # Same far-hemisphere masking as compose_transform -- see its
         # comment for why this substitutes a safe direction before

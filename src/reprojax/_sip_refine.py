@@ -21,7 +21,13 @@ step is kept as a safety margin at negligible extra cost.
 import jax
 import jax.numpy as jnp
 
-DEFAULT_REFINE_STEPS = 2
+#: Off by default since mapprojax Stage 2: mapprojax's own SIP inverse
+#: (``Sip.foc_to_pix``, used by ``native_to_pix``) now takes AP/BP only as the
+#: initial guess and Newton-solves against the forward A/B polynomial, so this
+#: refinement no longer changes the result (measured: the direct inverse is
+#: within 2.2e-7 px of astropy on the real SPHEREx L2b header, where raw AP/BP
+#: was off by ~0.03 px). Kept until the mapprojax 0.3 migration removes it.
+DEFAULT_REFINE_STEPS = 0
 
 
 def refine_pixel_estimate(mwcs, x0, y0, xn_target, yn_target, zn_target, n_steps=DEFAULT_REFINE_STEPS):

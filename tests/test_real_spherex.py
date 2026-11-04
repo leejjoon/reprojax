@@ -94,10 +94,11 @@ def test_real_sip_inversion_quality_quantified(spherex_header):
     direct_err = np.hypot(np.asarray(x_direct) - x_ref, np.asarray(y_direct) - y_ref)
     print(f"\nreal SPHEREx AP/BP direct-evaluation error vs astropy: max={direct_err.max():.4f} px, median={np.median(direct_err):.4f} px")
 
-    # Measured on this file: direct AP/BP alone reaches ~0.03 px, well past
-    # the 1e-4 px bar -- this is the "reverse-coefficient quality alone
-    # cannot meet tolerance" case the ticket anticipates.
-    assert direct_err.max() > 10 * PIX_TOL
+    # Raw AP/BP alone used to reach ~0.03 px on this file. Since mapprojax
+    # Stage 2, proj Newton-solves the SIP inverse itself (AP/BP is only the
+    # initial guess), so the direct path already meets the bar: measured
+    # max 2.2e-7 px against astropy on CPU.
+    assert direct_err.max() < PIX_TOL
 
     from reprojax._sip_refine import refine_pixel_estimate
     from mapprojax.utils import apply_rotation, radec_to_xyz
@@ -109,6 +110,9 @@ def test_real_sip_inversion_quality_quantified(spherex_header):
     print(f"refined (Newton) error vs astropy: max={refined_err.max():.2e} px, median={np.median(refined_err):.2e} px")
 
     assert refined_err.max() < PIX_TOL
+    # reprojax's own refinement no longer changes anything material.
+    assert np.max(np.hypot(np.asarray(x_refined) - np.asarray(x_direct),
+                           np.asarray(y_refined) - np.asarray(y_direct))) < PIX_TOL
 
 
 def test_real_composed_transform_matches_astropy(spherex_header, template_header):

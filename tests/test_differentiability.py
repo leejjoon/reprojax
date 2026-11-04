@@ -55,7 +55,7 @@ def _sip_coeffs(scale=SIP_SCALE, sign=1.0):
     return a, b
 
 
-def _loss(crval_in, cd_in, sip_a, sip_b, sip_ap, sip_bp, data, order=1, refine_steps=2, x_out=_X_OUT, y_out=_Y_OUT):
+def _loss(crval_in, cd_in, sip_a, sip_b, sip_ap, sip_bp, data, order=1, refine_steps=0, x_out=_X_OUT, y_out=_Y_OUT):
     sip = Sip(a=sip_a, b=sip_b, ap=sip_ap, bp=sip_bp)
     mwcs_in = TanJax(CRPIX_IN, cd_in, crval_in, sip=sip)
     mwcs_out = TanJax(CRPIX_OUT, CD_OUT, CRVAL_OUT, sip=None)
@@ -146,43 +146,49 @@ def test_grad_cd_matches_finite_differences():
 # ---------------------------------------------------------------------------
 
 
-def test_grad_sip_forward_coeffs_matches_finite_differences_with_refinement():
+# Central-difference step for the A/B check. Step sweep on this code (CPU,
+# worst relative discrepancy over components with |fd| > 1e-6; A / B):
+#   eps=1e-6: 8.2e-7 / 3.9e-5    eps=3e-7: 3.0e-7 / 3.5e-6
+#   eps=1e-7: 2.1e-7 / 3.9e-7    eps=3e-8: 4.9e-6 / 1.2e-7
+#   eps=1e-8: 1.9e-5 / 1.2e-6    eps=1e-9: 2.8e-4 / 2.0e-5
+# The ~3e-4 mismatch the roadmap recorded is the old eps=1e-9 step: error
+# grows at large steps (truncation) and at small steps (roundoff), the usual
+# finite-difference trade-off, with no pixel-boundary kink involved (that
+# would not shrink with the step). eps=1e-7 sits in the minimum, so
+# rtol=1e-5 has >20x margin.
+_SIP_FD_EPS = 1e-7
+_SIP_FD_RTOL = 1e-5
+
+
+def test_grad_sip_forward_coeffs_matches_finite_differences():
     crval_in, cd_in, sip_a, sip_b, sip_ap, sip_bp = _default_params()
 
     def f_a(a):
-        return _loss(crval_in, cd_in, a, sip_b, sip_ap, sip_bp, DATA, refine_steps=2)
+        return _loss(crval_in, cd_in, a, sip_b, sip_ap, sip_bp, DATA)
 
     def f_b(b):
-        return _loss(crval_in, cd_in, sip_a, b, sip_ap, sip_bp, DATA, refine_steps=2)
+        return _loss(crval_in, cd_in, sip_a, b, sip_ap, sip_bp, DATA)
 
     g_a = jax.grad(f_a)(sip_a)
     g_b = jax.grad(f_b)(sip_b)
-    _assert_matches_fd(g_a, _fd_grad(f_a, sip_a, eps=1e-9))
-    _assert_matches_fd(g_b, _fd_grad(f_b, sip_b, eps=1e-9))
+    _assert_matches_fd(g_a, _fd_grad(f_a, sip_a, eps=_SIP_FD_EPS), rtol=_SIP_FD_RTOL)
+    _assert_matches_fd(g_b, _fd_grad(f_b, sip_b, eps=_SIP_FD_EPS), rtol=_SIP_FD_RTOL)
 
 
-def test_grad_sip_reverse_coeffs_vanishes_under_refinement_but_not_without_it():
-    """Not a bug: documents Newton refinement's expected insensitivity to
-    its own initial guess, so a reader doesn't mistake a near-zero AP/BP
-    gradient for a broken computation.
+@pytest.mark.parametrize("refine_steps", [0, 2])
+def test_grad_sip_reverse_coeffs_vanishes_under_newton_inverse(refine_steps):
+    """Not a bug: mapprojax's SIP inverse Newton-solves against A/B and uses
+    AP/BP only as its initial guess, so the AP/BP gradient is near zero with
+    or without reprojax's own (now redundant) refinement.
     """
     crval_in, cd_in, sip_a, sip_b, sip_ap, sip_bp = _default_params()
 
-    def f_refined(ap):
-        return _loss(crval_in, cd_in, sip_a, sip_b, ap, sip_bp, DATA, refine_steps=2)
+    def f(ap):
+        return _loss(crval_in, cd_in, sip_a, sip_b, ap, sip_bp, DATA, refine_steps=refine_steps)
 
-    def f_unrefined(ap):
-        return _loss(crval_in, cd_in, sip_a, sip_b, ap, sip_bp, DATA, refine_steps=0)
-
-    g_refined = jax.grad(f_refined)(sip_ap)
-    g_unrefined = jax.grad(f_unrefined)(sip_ap)
-
-    assert np.all(np.isfinite(np.asarray(g_refined)))
-    assert np.max(np.abs(np.asarray(g_refined))) < 1e-8  # vanishes: refinement erases the initial guess
-    assert np.max(np.abs(np.asarray(g_unrefined))) > 1.0  # real signal without refinement
-
-    fd_unrefined = _fd_grad(f_unrefined, sip_ap, eps=1e-9)
-    _assert_matches_fd(g_unrefined, fd_unrefined)
+    g = np.asarray(jax.grad(f)(sip_ap))
+    assert np.all(np.isfinite(g))
+    assert np.max(np.abs(g)) < 1e-8
 
 
 # ---------------------------------------------------------------------------
@@ -330,18 +336,14 @@ def test_bilinear_gradient_has_kinks_at_pixel_crossings():
 
 
 # ---------------------------------------------------------------------------
-# A known, narrow, real-data-irrelevant limitation (see compose_transform's
-# docstring): differentiating *twice* through Newton-refined SIP (jax.grad
-# of a loss that internally autodiffs to build the refinement Jacobian) can
-# produce NaN at an *exact* geometric symmetry point. Documented here rather
-# than "fixed" because it requires several exact coincidences at once and
-# was not observed with any realistic (offset CRPIX, nonzero rotation,
-# cross-term SIP) parameters -- including every other test in this file and
-# the real SPHEREx header in tests/test_real_spherex.py.
+# An exact geometric symmetry point (output pixel on both CRPIXes, axis-aligned
+# CD, identity frame rotation, SIP depending on u only) used to give a NaN
+# gradient through reprojax's Newton refinement. Kept as a regression check
+# now that the default path (mapprojax's own masked inverse) is finite there.
 # ---------------------------------------------------------------------------
 
 
-def test_newton_refinement_nan_at_exact_symmetry_point_is_a_known_limitation():
+def test_sip_inverse_grad_is_finite_at_exact_symmetry_point():
     crpix_in = [10.0, 10.0]
     crpix_out = [7.0, 7.0]
     crval_out = jnp.array([180.0, 30.0])
@@ -363,14 +365,12 @@ def test_newton_refinement_nan_at_exact_symmetry_point_is_a_known_limitation():
         sip = Sip(a=sip_a, b=sip_b, ap=sip_ap, bp=sip_bp)
         mwcs_in = TanJax(crpix_in, cd_in, crval, sip=sip)
         mwcs_out = TanJax(crpix_out, cd_out, crval_out, sip=None)
-        transform = compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=2)
+        transform = compose_transform(mwcs_in, mwcs_out, rotation)
         result, footprint = reproject_interp_core(DATA, x_out, y_out, transform, order=1)
         safe = jnp.where(footprint > 0, result, 0.0)
         return jnp.sum(safe**2)
 
+    # Formerly a documented NaN from reprojax's refinement. With refinement
+    # off and mapprojax's masked Newton inverse, the gradient is finite.
     g = jax.grad(f)(crval_in)
-    assert bool(jnp.any(jnp.isnan(g))), (
-        "expected the documented exact-symmetry NaN; if this now passes, "
-        "compose_transform's docstring note and this test should be updated "
-        "(the limitation may have been resolved incidentally)"
-    )
+    assert np.all(np.isfinite(np.asarray(g)))

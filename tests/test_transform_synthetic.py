@@ -117,15 +117,12 @@ def test_sip_forward_path_output_side():
 
 
 # ---------------------------------------------------------------------------
-# SIP: reverse-polynomial path (SIP on the input WCS — proj_xyz evaluates
-# native_to_pix, which applies AP/BP directly). AP/BP is a fitted
-# approximation of the true inverse; build_transform now Newton-refines it
-# (reprojax._sip_refine) against the exact forward polynomial, which is what
-# gets this comfortably under tolerance even at a distortion magnitude an
-# order of magnitude larger than the AP/BP fit alone would clear. The
-# refinement was diagnosed and added against a real SPHEREx L2b header
-# (ticket #4), where the raw AP/BP evaluation disagreed with astropy's
-# iterative inversion by up to 0.03 px; see tests/test_real_spherex.py.
+# SIP: reverse-polynomial path (SIP on the input WCS, so the input WCS's
+# proj applies the SIP inverse). mapprojax's Sip.foc_to_pix uses AP/BP only
+# as the initial guess and Newton-solves against the exact forward A/B
+# polynomial, which keeps this under the Tier-1 tolerance. The raw AP/BP
+# shortfall was first diagnosed on a real SPHEREx L2b header (ticket #4: up
+# to 0.03 px vs astropy's iterative inversion); see tests/test_real_spherex.py.
 # ---------------------------------------------------------------------------
 
 
@@ -141,26 +138,6 @@ def _reverse_sip_fixture(scale=1e-6):
 def test_sip_reverse_path_input_side():
     h_in, h_out = _reverse_sip_fixture()
     assert_composed_transform_matches_astropy(h_in, h_out)
-
-
-def test_sip_reverse_path_without_reprojax_refinement():
-    """At this distortion magnitude the raw AP/BP evaluation alone used to
-    miss the Tier-1 tolerance by more than an order of magnitude. mapprojax
-    now Newton-solves the SIP inverse itself, so the transform with
-    reprojax's refinement disabled (the default since then) meets it.
-    """
-    h_in, h_out = _reverse_sip_fixture()
-    wcs_in, wcs_out = WCS(h_in), WCS(h_out)
-    transform = build_transform(wcs_in, wcs_out, sip_inverse_refine_steps=0)
-
-    x_out, y_out = _sample_pixels(2000, seed=1)
-    x_in, y_in = transform(x_out, y_out)
-    x_in, y_in = np.asarray(x_in), np.asarray(y_in)
-
-    ra, dec = wcs_out.all_pix2world(x_out, y_out, 0)
-    x_ref, y_ref = wcs_in.all_world2pix(ra, dec, 0)
-    err = np.hypot(x_in - x_ref, y_in - y_ref)
-    assert np.nanmax(err) < PIX_TOL  # measured 1.4e-8 px
 
 
 # ---------------------------------------------------------------------------
@@ -411,18 +388,3 @@ def test_cache_distinguishes_matrix_precision():
     # Both should be close (same underlying geometry), but not bit-identical
     # -- if they were, the cache-key change wouldn't be doing anything.
     assert not (float(x64) == float(x32) and float(y64) == float(y32))
-
-
-def test_forward_hemisphere_boundary_tan_excludes_sin_includes():
-    """TAN's horizon (native xn == 0) maps to infinity; SIN's unit-disc
-    boundary is a finite, valid pixel and must not be masked."""
-    import jax.numpy as jnp
-    from mapprojax.jax_projections import SinJax, TanJax
-    from reprojax.transform import _forward_hemisphere
-
-    cd = [[-1e-3, 0.0], [0.0, 1e-3]]
-    xn = jnp.asarray([-1e-3, 0.0, 1e-3])
-    tan = TanJax([0.0, 0.0], cd, [0.0, 0.0])
-    sin = SinJax([0.0, 0.0], cd, [0.0, 0.0])
-    assert list(map(bool, _forward_hemisphere(tan, xn))) == [False, False, True]
-    assert list(map(bool, _forward_hemisphere(sin, xn))) == [False, True, True]

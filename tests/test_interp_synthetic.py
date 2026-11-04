@@ -102,16 +102,14 @@ def test_sip_forward_path_output_side():
 # through a data gradient to the *image* level) showed up as a ~1e-5 value
 # error. Ticket #4 diagnosed the same shortfall at much larger, real-world
 # magnitude on an actual SPHEREx header (AP/BP vs astropy's iterative
-# inversion: up to 0.03 px) and fixed it at the source — build_transform now
-# Newton-refines the AP/BP estimate against the exact forward polynomial
-# (reprojax._sip_refine) whenever SIP is present. That drops the residual
-# here to the ~1e-8 px Newton-convergence floor, so this scenario now uses
-# distortion an order of magnitude larger than before (still comfortably
-# clearing the transform-level bar without refinement) and needs only a
-# small atol margin above that floor, not a bespoke, order(s)-of-magnitude
-# exception. See tests/test_transform_synthetic.py::test_sip_reverse_path_input_side
-# and test_sip_reverse_path_needs_newton_refinement for the transform-level
-# picture, and tests/test_real_spherex.py for the real-header measurement.
+# inversion: up to 0.03 px). mapprojax's SIP inverse now uses AP/BP only as
+# the initial guess and Newton-solves against the exact forward polynomial,
+# which drops the residual here to the ~1e-8 px Newton-convergence floor, so
+# this scenario uses distortion an order of magnitude larger than before and
+# needs only a small atol margin above that floor, not a bespoke,
+# order(s)-of-magnitude exception. See
+# tests/test_transform_synthetic.py::test_sip_reverse_path_input_side for the
+# transform-level picture, and tests/test_real_spherex.py for the real-header measurement.
 # ---------------------------------------------------------------------------
 
 
@@ -343,8 +341,8 @@ def test_core_is_jit_able():
 
 
 # ---------------------------------------------------------------------------
-# x64-disabled: imports without warnings (mapprojax no longer warns on
-# import since Stage 2); the library never mutates global JAX config.
+# x64-disabled: imports without warnings; the library never mutates global
+# JAX config.
 # ---------------------------------------------------------------------------
 
 

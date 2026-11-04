@@ -45,7 +45,7 @@ import jax.numpy as jnp
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
-from mapprojax.jax_projections import TanJax
+from mapprojax import Tan
 from mapprojax.sip import Sip
 from reproject import reproject_interp as original_reproject_interp
 from reproject.adaptive import reproject_adaptive as original_reproject_adaptive
@@ -137,7 +137,8 @@ def make_batch(header_in, header_out, data, n=BATCH_SIZE, seed=0):
         ap=jnp.stack([jnp.asarray(s.ap) for s in sips]),
         bp=jnp.stack([jnp.asarray(s.bp) for s in sips]),
     )
-    mwcs_in_batch = TanJax(jnp.asarray(crpixs), jnp.asarray(cds), jnp.asarray(crvals), sip=sip_batch)
+    mwcs_in_batch = Tan(jnp.asarray(crpixs), jnp.asarray(cds), jnp.asarray(crvals), sip=sip_batch,
+                        precision="f64")
     rotation_batch = jnp.stack([jnp.asarray(r) for r in rotations])
     return headers, data_batch, mwcs_in_batch, rotation_batch
 
@@ -209,15 +210,15 @@ def main():
     )
     print(f"  original reproject_adaptive (parallel, tuned block_size): {t_orig_adaptive_mc:.3f}s")
 
-    # build_transform() caches on the numeric content of (wcs_in, wcs_out,
-    # sip_inverse_refine_steps), so this repeated call returns the *same*
+    # build_transform() caches on the numeric content of (wcs_in, wcs_out),
+    # so this repeated call returns the *same*
     # transform object the wrapper built internally last time rather than
     # rebuilding it -- avoiding a full jit retrace on every call. That
     # retrace was cheap for reproject_interp (~0.27s either way) but not for
     # reproject_adaptive, whose core differentiates *through* transform
-    # (jax.jacfwd), and transform itself already runs 2 internal
-    # jax.jacfwd-based Newton steps whenever SIP is present (this real
-    # SPHEREx header has SIP) -- retracing that doubly-nested autodiff graph
+    # (jax.jacfwd), and transform itself runs mapprojax's Newton-solved SIP
+    # inverse whenever SIP is present (this real SPHEREx header has SIP) --
+    # retracing that doubly-nested autodiff graph
     # used to cost ~4s per call before the cache existed.
     t_adaptive_compile = timed(reprojax.reproject_adaptive, (data, wcs_in), header_out, max_window_radius=10)
     t_adaptive_warm = timed(reprojax.reproject_adaptive, (data, wcs_in), header_out, max_window_radius=10)
@@ -226,7 +227,7 @@ def main():
     print(f"\n--- Batch of {BATCH_SIZE}: {data.shape} -> {shape_out} ---")
 
     headers, data_batch, mwcs_in_batch, rotation_batch = make_batch(header_in, header_out, data)
-    mwcs_out = TanJax(*wcs_params_from_astropy(wcs_out)[:3], sip=None)
+    mwcs_out = Tan(*wcs_params_from_astropy(wcs_out)[:3], sip=None, precision="f64")
 
     t0 = time.perf_counter()
     for h in headers:

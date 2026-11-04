@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from astropy.wcs import WCS
-from mapprojax.jax_projections import TanJax
+from mapprojax.wcs import Tan
 from mapprojax.sip import Sip
 from reproject import reproject_interp as original_reproject_interp
 
@@ -46,7 +46,7 @@ def _make_batch(n, ny_in=30, nx_in=30, seed=0):
 
 
 def _stack_mwcs_in(headers_in, wcs_out):
-    """Build a batched TanJax + rotation stack from a list of astropy
+    """Build a batched mapprojax ``Tan`` + rotation stack from a list of astropy
     headers, using the same host-side parameter extraction reprojax's
     transform module uses for a single exposure.
     """
@@ -66,8 +66,8 @@ def _stack_mwcs_in(headers_in, wcs_out):
         ap=jnp.stack([jnp.asarray(s.ap) for s in sips]),
         bp=jnp.stack([jnp.asarray(s.bp) for s in sips]),
     )
-    mwcs_in_batch = TanJax(
-        jnp.asarray(crpixs), jnp.asarray(cds), jnp.asarray(crvals), sip=sip_batch
+    mwcs_in_batch = Tan(
+        jnp.asarray(crpixs), jnp.asarray(cds), jnp.asarray(crvals), sip=sip_batch, precision="f64"
     )
     rotation_batch = jnp.stack([jnp.asarray(r) for r in rotations])
     return mwcs_in_batch, rotation_batch
@@ -84,7 +84,7 @@ def test_batched_matches_looped_single_exposures():
 
     h_out = make_header((15.0, 15.0), (180.0, 30.0), 1.0, naxis=(30, 30))
     wcs_out = WCS(h_out)
-    mwcs_out = TanJax(*wcs_params_from_astropy(wcs_out)[:3], sip=None)
+    mwcs_out = Tan(*wcs_params_from_astropy(wcs_out)[:3], sip=None, precision="f64")
 
     mwcs_in_batch, rotation_batch = _stack_mwcs_in(headers_in, wcs_out)
 
@@ -100,7 +100,7 @@ def test_batched_matches_looped_single_exposures():
     for i in range(n):
         wcs_in_i = WCS(headers_in[i])
         crpix_i, cd_i, crval_i, sip_i = wcs_params_from_astropy(wcs_in_i)
-        mwcs_in_i = TanJax(crpix_i, cd_i, crval_i, sip=sip_i)
+        mwcs_in_i = Tan(crpix_i, cd_i, crval_i, sip=sip_i, precision="f64")
         transform_i = compose_transform(mwcs_in_i, mwcs_out, rotation_batch[i])
         result_i, footprint_i = reproject_interp_core(data_batch[i], x_out, y_out, transform_i, order=1)
 
@@ -124,7 +124,7 @@ def test_batched_jit_on_gpu_at_spherex_scale():
     ny_out = nx_out = 1201  # matches the real Galactic template scale
     h_out = make_header((600.0, 600.0), (180.0, 30.0), 1.0, naxis=(nx_out, ny_out))
     wcs_out = WCS(h_out)
-    mwcs_out = TanJax(*wcs_params_from_astropy(wcs_out)[:3], sip=None)
+    mwcs_out = Tan(*wcs_params_from_astropy(wcs_out)[:3], sip=None, precision="f64")
     mwcs_in_batch, rotation_batch = _stack_mwcs_in(headers_in, wcs_out)
 
     y_out, x_out = jnp.meshgrid(
@@ -133,7 +133,7 @@ def test_batched_jit_on_gpu_at_spherex_scale():
 
     assert data_batch.device.platform == "gpu"
 
-    jitted = jax.jit(reproject_interp_batched, static_argnames=("order", "sip_inverse_refine_steps"))
+    jitted = jax.jit(reproject_interp_batched, static_argnames=("order",))
     results, footprints = jitted(data_batch, mwcs_in_batch, mwcs_out, rotation_batch, x_out, y_out)
     results.block_until_ready()
 
@@ -160,14 +160,14 @@ def test_benchmark_batched_vs_looped_original(capsys):
     ny_out = nx_out = 1201
     h_out = make_header((600.0, 600.0), (180.0, 30.0), 1.0, naxis=(nx_out, ny_out))
     wcs_out = WCS(h_out)
-    mwcs_out = TanJax(*wcs_params_from_astropy(wcs_out)[:3], sip=None)
+    mwcs_out = Tan(*wcs_params_from_astropy(wcs_out)[:3], sip=None, precision="f64")
     mwcs_in_batch, rotation_batch = _stack_mwcs_in(headers_in, wcs_out)
 
     y_out, x_out = jnp.meshgrid(
         jnp.arange(ny_out, dtype=jnp.float64), jnp.arange(nx_out, dtype=jnp.float64), indexing="ij"
     )
 
-    jitted = jax.jit(reproject_interp_batched, static_argnames=("order", "sip_inverse_refine_steps"))
+    jitted = jax.jit(reproject_interp_batched, static_argnames=("order",))
 
     # Warm-up: exclude one-time JIT compilation from the timed call.
     jitted(data_batch, mwcs_in_batch, mwcs_out, rotation_batch, x_out, y_out)[0].block_until_ready()

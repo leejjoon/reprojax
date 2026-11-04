@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from mapprojax.jax_projections import TanJax
+from mapprojax.wcs import Tan
 from mapprojax.sip import Sip
 
 from reprojax.interp import reproject_interp_core
@@ -24,8 +24,7 @@ from reprojax.transform import compose_transform
 # to every coefficient position that's populated), and a small CRVAL offset
 # between input and output within the field of view -- i.e. ordinary,
 # unremarkable WCS parameters, not the exact-symmetry configuration
-# documented in test_newton_refinement_nan_at_exact_symmetry_point_is_a_known_limitation
-# below. No frame rotation here (identity): an arbitrary rotation not
+# exercised in test_sip_inverse_grad_is_finite_at_exact_symmetry_point below. No frame rotation here (identity): an arbitrary rotation not
 # constructed to align the two WCSes' tangent points can shift the effective
 # offset between them by degrees rather than arcseconds, which was an early,
 # corrected mistake in building this scene (it silently made every pixel
@@ -55,11 +54,11 @@ def _sip_coeffs(scale=SIP_SCALE, sign=1.0):
     return a, b
 
 
-def _loss(crval_in, cd_in, sip_a, sip_b, sip_ap, sip_bp, data, order=1, refine_steps=0, x_out=_X_OUT, y_out=_Y_OUT):
+def _loss(crval_in, cd_in, sip_a, sip_b, sip_ap, sip_bp, data, order=1, x_out=_X_OUT, y_out=_Y_OUT):
     sip = Sip(a=sip_a, b=sip_b, ap=sip_ap, bp=sip_bp)
-    mwcs_in = TanJax(CRPIX_IN, cd_in, crval_in, sip=sip)
-    mwcs_out = TanJax(CRPIX_OUT, CD_OUT, CRVAL_OUT, sip=None)
-    transform = compose_transform(mwcs_in, mwcs_out, ROTATION, sip_inverse_refine_steps=refine_steps)
+    mwcs_in = Tan(CRPIX_IN, cd_in, crval_in, sip=sip, precision="f64")
+    mwcs_out = Tan(CRPIX_OUT, CD_OUT, CRVAL_OUT, sip=None, precision="f64")
+    transform = compose_transform(mwcs_in, mwcs_out, ROTATION)
     result, footprint = reproject_interp_core(data, x_out, y_out, transform, order=order)
     safe = jnp.where(footprint > 0, result, 0.0)
     return jnp.sum(safe**2)
@@ -91,13 +90,11 @@ def _fd_grad(f, x, eps):
 
 
 def _assert_matches_fd(analytic, fd, rtol=1e-4, atol=1e-6):
-    """rtol is looser than a single-point gradient check would need: the
-    loss sums over ~210 output pixels, and bilinear interpolation has a
-    genuine gradient kink at each pixel crossing (see
-    test_bilinear_gradient_has_kinks_at_pixel_crossings) -- a central
-    difference at a fixed eps has *some* chance of straddling one of those
-    crossings for one of the many summed pixels, which central-differences
-    away from any crossing would not need to tolerate.
+    """Compare an analytic gradient with a central-difference estimate.
+
+    The tolerance must cover the central difference's own truncation and
+    roundoff error at the chosen step (see the step sweep above
+    _SIP_FD_EPS), not just the analytic gradient's error.
     """
     analytic, fd = np.asarray(analytic), np.asarray(fd)
     assert np.all(np.isfinite(analytic)), "analytic gradient is not finite"
@@ -134,28 +131,24 @@ def test_grad_cd_matches_finite_differences():
 # ---------------------------------------------------------------------------
 # Gradients w.r.t. SIP coefficients match finite differences.
 #
-# Which coefficients carry gradient signal depends on whether Newton
-# refinement is active (the default whenever SIP is present, see
-# reprojax._sip_refine): refinement uses AP/BP purely as an initial guess and
-# then converges against the *forward* A/B polynomial, so at convergence the
-# result is (to the refinement's own precision) insensitive to the initial
-# guess -- gradient w.r.t. AP/BP is near machine-zero, and A/B carries the
-# real signal. Disable refinement to instead see AP/BP carry the signal
-# (the plain evaluation path). Both are tested; both match finite differences
-# where the signal is non-negligible.
+# mapprojax's SIP inverse (Sip.foc_to_pix, used by the input WCS's proj)
+# takes AP/BP only as the initial guess and Newton-solves against the
+# *forward* A/B polynomial. At convergence the result is insensitive to that
+# guess, so the gradient w.r.t. AP/BP is near machine-zero and A/B carries
+# the real signal.
 # ---------------------------------------------------------------------------
 
-
-# Central-difference step for the A/B check. Step sweep on this code (CPU,
-# worst relative discrepancy over components with |fd| > 1e-6; A / B):
-#   eps=1e-6: 8.2e-7 / 3.9e-5    eps=3e-7: 3.0e-7 / 3.5e-6
-#   eps=1e-7: 2.1e-7 / 3.9e-7    eps=3e-8: 4.9e-6 / 1.2e-7
-#   eps=1e-8: 1.9e-5 / 1.2e-6    eps=1e-9: 2.8e-4 / 2.0e-5
-# The ~3e-4 mismatch the roadmap recorded is the old eps=1e-9 step: error
-# grows at large steps (truncation) and at small steps (roundoff), the usual
-# finite-difference trade-off, with no pixel-boundary kink involved (that
-# would not shrink with the step). eps=1e-7 sits in the minimum, so
-# rtol=1e-5 has >20x margin.
+# Central-difference step for the A/B check. Step sweep (CPU, worst relative
+# discrepancy over components with |fd| > 1e-6; A / B):
+#   eps=1e-6: 8.2e-7 / 3.9e-5    eps=3e-7: 2.9e-7 / 3.5e-6
+#   eps=1e-7: 2.4e-6 / 3.9e-7    eps=3e-8: 2.3e-6 / 7.0e-7
+#   eps=1e-8: 1.9e-5 / 1.9e-6    eps=1e-9: 9.5e-5 / 1.3e-5
+#   eps=3e-10: 3.9e-4 / 5.4e-5   eps=1e-10: 8.9e-4 / 1.8e-4
+# Error grows at large steps (truncation, ~eps^2) and at small steps
+# (roundoff, ~1/eps), the usual finite-difference trade-off; no
+# pixel-boundary kink is involved (that would not shrink with the step).
+# ROCm at eps=1e-7: 2.1e-7 / 3.9e-7. eps=1e-7 sits in the flat minimum, so
+# rtol=1e-5 has >4x margin over the worst measured 2.4e-6.
 _SIP_FD_EPS = 1e-7
 _SIP_FD_RTOL = 1e-5
 
@@ -175,16 +168,15 @@ def test_grad_sip_forward_coeffs_matches_finite_differences():
     _assert_matches_fd(g_b, _fd_grad(f_b, sip_b, eps=_SIP_FD_EPS), rtol=_SIP_FD_RTOL)
 
 
-@pytest.mark.parametrize("refine_steps", [0, 2])
-def test_grad_sip_reverse_coeffs_vanishes_under_newton_inverse(refine_steps):
-    """Not a bug: mapprojax's SIP inverse Newton-solves against A/B and uses
-    AP/BP only as its initial guess, so the AP/BP gradient is near zero with
-    or without reprojax's own (now redundant) refinement.
+def test_grad_sip_reverse_coeffs_vanishes_under_newton_inverse():
+    """Not a bug: documents that the Newton-solved SIP inverse is insensitive
+    to its AP/BP initial guess, so a reader doesn't mistake a near-zero
+    AP/BP gradient for a broken computation.
     """
     crval_in, cd_in, sip_a, sip_b, sip_ap, sip_bp = _default_params()
 
     def f(ap):
-        return _loss(crval_in, cd_in, sip_a, sip_b, ap, sip_bp, DATA, refine_steps=refine_steps)
+        return _loss(crval_in, cd_in, sip_a, sip_b, ap, sip_bp, DATA)
 
     g = np.asarray(jax.grad(f)(sip_ap))
     assert np.all(np.isfinite(g))
@@ -228,8 +220,8 @@ def test_grad_data_matches_finite_differences():
 def test_grad_clean_through_footprint_masking_with_genuinely_invalid_pixels():
     """Output grid deliberately extends beyond the input array, so some
     pixels land outside its bounds (footprint 0 there, from
-    reproject_interp_core's own coverage check) with SIP + Newton refinement
-    active on the input WCS (the default whenever SIP is present). This
+    reproject_interp_core's own coverage check) with SIP on the input WCS
+    (so its Newton-solved inverse is in the differentiated path). This
     should not poison the gradient w.r.t. WCS parameters or data, which are
     shared across every output pixel (a single NaN contribution would
     otherwise NaN the whole reduced loss).
@@ -245,8 +237,8 @@ def test_grad_clean_through_footprint_masking_with_genuinely_invalid_pixels():
 
     # sanity: this scenario actually exercises invalid pixels
     sip = Sip(a=sip_a, b=sip_b, ap=sip_ap, bp=sip_bp)
-    mwcs_in = TanJax(CRPIX_IN, cd_in, crval_in, sip=sip)
-    mwcs_out = TanJax(CRPIX_OUT, CD_OUT, CRVAL_OUT, sip=None)
+    mwcs_in = Tan(CRPIX_IN, cd_in, crval_in, sip=sip, precision="f64")
+    mwcs_out = Tan(CRPIX_OUT, CD_OUT, CRVAL_OUT, sip=None, precision="f64")
     transform = compose_transform(mwcs_in, mwcs_out, ROTATION)
     _, footprint = reproject_interp_core(DATA, x_out, y_out, transform, order=1)
     assert int(jnp.sum(footprint == 0)) > 0
@@ -260,7 +252,7 @@ def test_grad_clean_through_off_hemisphere_masking_without_sip():
     """The other, narrower source of invalid pixels: a point genuinely
     outside the input WCS's visible hemisphere (compose_transform's own
     xn > 0 domain guard, independent of reproject_interp_core's array-bounds
-    coverage check and of any SIP/refinement). No SIP here, isolating this
+    coverage check and of any SIP inverse). No SIP here, isolating this
     specific masking path.
     """
     crpix_in = [10.3, 9.7]
@@ -274,8 +266,8 @@ def test_grad_clean_through_off_hemisphere_masking_without_sip():
     )
 
     def f(crval_in, cd_in, data):
-        mwcs_in = TanJax(crpix_in, cd_in, crval_in, sip=None)
-        mwcs_out = TanJax(crpix_out, cd_out, crval_out, sip=None)
+        mwcs_in = Tan(crpix_in, cd_in, crval_in, sip=None, precision="f64")
+        mwcs_out = Tan(crpix_out, cd_out, crval_out, sip=None, precision="f64")
         transform = compose_transform(mwcs_in, mwcs_out, rotation)
         result, footprint = reproject_interp_core(data, x_out, y_out, transform, order=1)
         return jnp.sum(jnp.where(footprint > 0, result, 0.0) ** 2)
@@ -283,8 +275,8 @@ def test_grad_clean_through_off_hemisphere_masking_without_sip():
     crval_in = jnp.array([180.0, 30.0])
     cd_in = jnp.array([[-1.0 / 3600, 0.0], [0.0, 1.0 / 3600]])
 
-    mwcs_in = TanJax(crpix_in, cd_in, crval_in, sip=None)
-    mwcs_out = TanJax(crpix_out, cd_out, crval_out, sip=None)
+    mwcs_in = Tan(crpix_in, cd_in, crval_in, sip=None, precision="f64")
+    mwcs_out = Tan(crpix_out, cd_out, crval_out, sip=None, precision="f64")
     transform = compose_transform(mwcs_in, mwcs_out, rotation)
     x_in, _ = transform(x_out, y_out)
     assert bool(jnp.any(jnp.isnan(x_in))), "scenario should include off-hemisphere points"
@@ -336,10 +328,11 @@ def test_bilinear_gradient_has_kinks_at_pixel_crossings():
 
 
 # ---------------------------------------------------------------------------
-# An exact geometric symmetry point (output pixel on both CRPIXes, axis-aligned
-# CD, identity frame rotation, SIP depending on u only) used to give a NaN
-# gradient through reprojax's Newton refinement. Kept as a regression check
-# now that the default path (mapprojax's own masked inverse) is finite there.
+# Differentiating through mapprojax's Newton-solved SIP inverse (jax.grad of
+# a loss whose inverse internally evaluates the forward polynomial's
+# Jacobian) at an exact-symmetry point: SIP depending on u only, CRVAL and
+# CD aligned. The gradient must stay finite there, not only at the generic
+# parameters used above.
 # ---------------------------------------------------------------------------
 
 
@@ -363,14 +356,12 @@ def test_sip_inverse_grad_is_finite_at_exact_symmetry_point():
 
     def f(crval):
         sip = Sip(a=sip_a, b=sip_b, ap=sip_ap, bp=sip_bp)
-        mwcs_in = TanJax(crpix_in, cd_in, crval, sip=sip)
-        mwcs_out = TanJax(crpix_out, cd_out, crval_out, sip=None)
+        mwcs_in = Tan(crpix_in, cd_in, crval, sip=sip, precision="f64")
+        mwcs_out = Tan(crpix_out, cd_out, crval_out, sip=None, precision="f64")
         transform = compose_transform(mwcs_in, mwcs_out, rotation)
         result, footprint = reproject_interp_core(DATA, x_out, y_out, transform, order=1)
         safe = jnp.where(footprint > 0, result, 0.0)
         return jnp.sum(safe**2)
 
-    # Formerly a documented NaN from reprojax's refinement. With refinement
-    # off and mapprojax's masked Newton inverse, the gradient is finite.
     g = jax.grad(f)(crval_in)
     assert np.all(np.isfinite(np.asarray(g)))

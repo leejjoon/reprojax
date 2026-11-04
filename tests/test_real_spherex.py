@@ -76,9 +76,10 @@ def test_real_forward_sip_path_pixel_to_sky(spherex_header):
 
 
 def test_real_sip_inversion_quality_quantified(spherex_header):
-    """Quantify the real AP/BP reverse polynomial's inversion quality against
-    astropy's iterative all_world2pix, both with and without Newton
-    refinement — this is the measurement ticket #4 exists to make.
+    """Quantify the real SIP inverse (mapprojax's ``proj``: AP/BP initial
+    guess, Newton-solved against the forward A/B polynomial) against
+    astropy's iterative all_world2pix -- the measurement ticket #4 exists to
+    make.
     """
     wcs = WCS(spherex_header)
     mwcs = _mapprojax_wcs(wcs)
@@ -94,31 +95,14 @@ def test_real_sip_inversion_quality_quantified(spherex_header):
     direct_err = np.hypot(np.asarray(x_direct) - x_ref, np.asarray(y_direct) - y_ref)
     print(f"\nreal SPHEREx AP/BP direct-evaluation error vs astropy: max={direct_err.max():.4f} px, median={np.median(direct_err):.4f} px")
 
-    # Raw AP/BP alone used to reach ~0.03 px on this file. Since mapprojax
-    # Stage 2, proj Newton-solves the SIP inverse itself (AP/BP is only the
-    # initial guess), so the direct path already meets the bar: measured
-    # max 2.2e-7 px against astropy on CPU.
+    # mapprojax's Newton-solved SIP inverse meets the Tier-1 bar directly;
+    # keep the measurement to prevent regression.
     assert direct_err.max() < PIX_TOL
-
-    from reprojax._sip_refine import refine_pixel_estimate
-    from mapprojax.utils import apply_rotation, radec_to_xyz
-
-    xc, yc, zc = radec_to_xyz(np.radians(ra), np.radians(dec))
-    xn, yn, zn = apply_rotation(mwcs.r_matrix, xc, yc, zc)
-    x_refined, y_refined = refine_pixel_estimate(mwcs, x_direct, y_direct, xn, yn, zn)
-    refined_err = np.hypot(np.asarray(x_refined) - x_ref, np.asarray(y_refined) - y_ref)
-    print(f"refined (Newton) error vs astropy: max={refined_err.max():.2e} px, median={np.median(refined_err):.2e} px")
-
-    assert refined_err.max() < PIX_TOL
-    # reprojax's own refinement no longer changes anything material.
-    assert np.max(np.hypot(np.asarray(x_refined) - np.asarray(x_direct),
-                           np.asarray(y_refined) - np.asarray(y_direct))) < PIX_TOL
 
 
 def test_real_composed_transform_matches_astropy(spherex_header, template_header):
-    """The full composed PixelTransform (as build_transform produces, with
-    its default Newton refinement) meets the Tier-1 bar end-to-end on the
-    real ICRS<->Galactic pair.
+    """The full composed PixelTransform (as build_transform produces) meets
+    the Tier-1 bar end-to-end on the real ICRS<->Galactic pair.
     """
     wcs_in = WCS(spherex_header)
     wcs_out = WCS(template_header)
@@ -143,13 +127,10 @@ def test_real_composed_transform_matches_astropy(spherex_header, template_header
 
 def test_real_composed_transform_f32_precision_quantified(spherex_header, template_header):
     """matrix_precision="f32" (mapprojax's Reprojector, no jax_enable_x64
-    needed) on this real ICRS TAN+SIP <-> Galactic TAN pair: measured
-    max=1.4e-2 px, median=1.6e-3 px against the same astropy reference as
-    the f64 test above -- an order of magnitude looser than the f64 Tier-1
-    bar, consistent with mapprojax's own documented ~1e-4 px-per-degree-ish
-    growth with field-center separation (ICRS<->Galactic here is tens of
-    degrees). Bounds below have real headroom over that measurement, not
-    copied from any other report.
+    needed) on this real ICRS TAN+SIP <-> Galactic TAN pair, against the
+    same astropy reference as the f64 test above. Measured (CPU and ROCm
+    agree): max=2.81e-4 px, median=6.58e-5 px over all 5000 samples. The
+    caps below are ~2x those measurements.
     """
     wcs_in = WCS(spherex_header)
     wcs_out = WCS(template_header)
@@ -169,8 +150,92 @@ def test_real_composed_transform_f32_precision_quantified(spherex_header, templa
     err = np.hypot(x_in - x_ref, y_in - y_ref)
     valid = ~np.isnan(err)
     assert valid.any()
-    assert np.nanmax(err) < 0.05
-    assert np.nanmedian(err) < 0.01
+    assert int(valid.sum()) == n  # measured: all 5000 samples valid
+    assert np.nanmax(err) < 6e-4  # measured max 2.81e-4 px
+    assert np.nanmedian(err) < 1.5e-4  # measured median 6.58e-5 px
+
+
+def _strip_reverse_sip(header):
+    """Drop the AP/BP reverse polynomial (and its orders), keeping A/B."""
+    header = header.copy()
+    for key in list(header):
+        if key.startswith(("AP_", "BP_")):
+            del header[key]
+    return header
+
+
+# Measured on CPU and ROCm (identical): max error of the f32 transform over
+# the oracle-valid samples is 3.04e-4 px forward (SPHEREx is the source) and
+# 2.59e-4 px reverse (the template is the source), for both sip modes. The
+# f32 caps are ~2x those. f64 measures 4.0e-8 px forward / 6.9e-11 px
+# reverse, well inside the shared Tier-1 PIX_TOL.
+_F32_CAP = {False: 6e-4, True: 5e-4}
+# Oracle-valid sample counts (seed 7, 5000 samples). These depend only on
+# astropy and the fixed RNG seed, so they are deterministic and frozen.
+_EXPECTED_OVERLAP = {False: 4673, True: 1568}
+
+
+@pytest.mark.parametrize("matrix_precision", ["f64", "f32"])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("sip_mode", ["full", "ab_only"])
+def test_real_pair_bidirectional_overlap_gate(
+    spherex_header, template_header, matrix_precision, reverse, sip_mode
+):
+    """Both real frame directions retain finite, non-vacuous overlap.
+
+    ``ab_only`` strips AP/BP from whichever header carries SIP (the SPHEREx
+    header, which is the source forward and the target in reverse), so the
+    transform must work from the forward A/B polynomial alone.
+    """
+    cap = PIX_TOL if matrix_precision == "f64" else _F32_CAP[reverse]
+    source_header, target_header = (
+        (spherex_header, template_header)
+        if not reverse
+        else (template_header, spherex_header)
+    )
+    if sip_mode == "ab_only":
+        assert any(k.startswith(("AP_", "BP_")) for k in spherex_header)
+        full_transform = build_transform(
+            WCS(source_header), WCS(target_header), matrix_precision=matrix_precision
+        )
+        if reverse:
+            target_header = _strip_reverse_sip(target_header)
+        else:
+            source_header = _strip_reverse_sip(source_header)
+        for header in (source_header, target_header):
+            assert not any(k.startswith(("AP_", "BP_")) for k in header)
+    source = WCS(source_header)
+    target = WCS(target_header)
+    transform = build_transform(source, target, matrix_precision=matrix_precision)
+    if sip_mode == "ab_only":
+        # A distinct SIP fingerprint, so a distinct (not cached-full) transform.
+        assert transform is not full_transform
+    rng = np.random.default_rng(7)
+    n = 5000
+    x_out = rng.uniform(0, target_header["NAXIS1"] - 1, n)
+    y_out = rng.uniform(0, target_header["NAXIS2"] - 1, n)
+    x_in, y_in = transform(x_out, y_out)
+    sky = SkyCoord(
+        *target.all_pix2world(x_out, y_out, 0),
+        unit="deg",
+        frame=wcs_to_celestial_frame(target),
+    ).transform_to(wcs_to_celestial_frame(source))
+    x_ref, y_ref = source.all_world2pix(
+        sky.spherical.lon.deg, sky.spherical.lat.deg, 0
+    )
+    x_in, y_in = np.asarray(x_in), np.asarray(y_in)
+    err = np.hypot(x_in - x_ref, y_in - y_ref)
+    oracle_valid = (
+        np.isfinite(x_ref)
+        & np.isfinite(y_ref)
+        & (x_ref >= 0)
+        & (x_ref < source_header["NAXIS1"])
+        & (y_ref >= 0)
+        & (y_ref < source_header["NAXIS2"])
+    )
+    assert int(oracle_valid.sum()) == _EXPECTED_OVERLAP[reverse]
+    assert np.all(np.isfinite(err[oracle_valid]))
+    assert np.max(err[oracle_valid]) < cap
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +264,7 @@ def test_real_reproject_interp_matches_original(spherex_header, spherex_data, te
     # mask it) where the local value gradient is ~10^4 per pixel; there,
     # astropy's own iterative all_world2pix intermittently fails to fully
     # converge (NoConvergence), and the sub-micropixel position difference
-    # between its best-effort answer and reprojax's Newton-refined one gets
+    # between its best-effort answer and mapprojax's Newton-solved one gets
     # amplified into a value difference up to ~0.007 -- not a reprojax
     # accuracy defect (the transform itself measures ~2e-7 px on this header;
     # see test_real_sip_inversion_quality_quantified), but an expected

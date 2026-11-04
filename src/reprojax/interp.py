@@ -13,7 +13,6 @@ from astropy.io.fits import Header
 from astropy.wcs import WCS
 from jax.scipy.ndimage import map_coordinates
 
-from ._sip_refine import DEFAULT_REFINE_STEPS
 from .transform import build_transform, compose_transform
 
 SUPPORTED_ORDERS = (0, 1)
@@ -121,7 +120,6 @@ def reproject_interp_batched(
     x_out,
     y_out,
     order=1,
-    sip_inverse_refine_steps=DEFAULT_REFINE_STEPS,
 ):
     """Reproject a batch of exposures onto one shared output grid.
 
@@ -129,8 +127,8 @@ def reproject_interp_batched(
     transform, then reproject) — per the design, batching happens by
     vmapping the core, not by threading a batch dimension through a single
     transform. This is a thin, documented recipe: build ``mwcs_in_batch``
-    (and ``rotation_batch``) yourself with mapprojax's JAX WCS classes and
-    JAX pytrees, each leaf carrying a leading batch dimension, and everything
+    (and ``rotation_batch``) yourself with mapprojax's ``Tan``/``Sin`` (which are
+    JAX pytrees), each leaf carrying a leading batch dimension, and everything
     else follows the same path as the single-exposure core.
 
     Parameters
@@ -139,10 +137,11 @@ def reproject_interp_batched(
         Stacked input images. Individual exposures may differ in size only
         if you pad them to a common shape first — vmap requires uniform
         shapes across the batch.
-    mwcs_in_batch : a mapprojax WCS (e.g. TanJax), batched
+    mwcs_in_batch : a mapprojax WCS (e.g. ``mapprojax.wcs.Tan``), batched
         Construct with each parameter (crpix, cd, crval, and SIP
         coefficients if used) carrying a leading dimension of size ``n`` —
-        e.g. ``TanJax(crpix_batch, cd_batch, crval_batch, sip=sip_batch)``.
+        e.g. ``Tan(crpix_batch, cd_batch, crval_batch, sip=sip_batch,
+        precision="f64")`` (``precision=`` is required).
         Parameters that don't vary across the batch (e.g. a shared crpix for
         exposures from the same detector) still need that leading dimension;
         broadcast them yourself (``jnp.broadcast_to``) before constructing.
@@ -158,8 +157,6 @@ def reproject_interp_batched(
         The shared output pixel grid (not batched).
     order : int
         0 (nearest) or 1 (bilinear).
-    sip_inverse_refine_steps : int
-        See :func:`build_transform`.
 
     Returns
     -------
@@ -169,7 +166,7 @@ def reproject_interp_batched(
     """
 
     def _single(data, mwcs_in, rotation):
-        transform = compose_transform(mwcs_in, mwcs_out, rotation, sip_inverse_refine_steps=sip_inverse_refine_steps)
+        transform = compose_transform(mwcs_in, mwcs_out, rotation)
         return reproject_interp_core(data, x_out, y_out, transform, order=order)
 
     return jax.vmap(_single, in_axes=(0, 0, 0))(data_batch, mwcs_in_batch, rotation_batch)

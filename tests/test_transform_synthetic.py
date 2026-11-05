@@ -78,9 +78,15 @@ def test_mapprojax_transform_exposes_optional_pixel_map():
     x_out = np.asarray([0.0, 50.0, 199.0])
     y_out = np.asarray([0.0, 100.0, 199.0])
     x_in, y_in = transform(x_out, y_out)
+    expected = (
+        np.isfinite(x_in) & np.isfinite(y_in)
+        & (x_in >= -0.5) & (x_in < 199.5)
+        & (y_in >= -0.5) & (y_in < 199.5)
+    )
     mapped_x, mapped_y, valid = transform.pixel_map(
         x_out, y_out, bounds_shape=(200, 200)
     )
+    np.testing.assert_array_equal(np.asarray(valid), expected)
     np.testing.assert_allclose(np.asarray(mapped_x), np.where(valid, x_in, 0.0))
     np.testing.assert_allclose(np.asarray(mapped_y), np.where(valid, y_in, 0.0))
     assert np.asarray(valid).dtype == bool

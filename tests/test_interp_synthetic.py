@@ -246,38 +246,60 @@ def test_footprint_semantics_are_self_consistent():
 
 
 @pytest.mark.parametrize("order", [0, 1])
-@pytest.mark.parametrize("dtype", [np.float32, np.float64])
-def test_pixel_map_capability_matches_independent_callable_fallback(order, dtype):
-    """Capability and fallback paths agree on a compact edge/NaN fixture."""
+@pytest.mark.parametrize(
+    "matrix_precision,coordinate_dtype",
+    [("f32", np.float32), ("f64", np.float64)],
+)
+def test_pixel_map_capability_matches_plain_callable_fallback(
+    order, matrix_precision, coordinate_dtype
+):
+    """Capability and plain-callable paths agree on an edge/NaN fixture."""
     header = make_header(
         (1.0, 1.0), (180.0, 30.0), 1.0, naxis=(4, 4)
     )
-    transform = build_transform(WCS(header), WCS(header), matrix_precision="f64")
+    transform = build_transform(
+        WCS(header), WCS(header), matrix_precision=matrix_precision
+    )
     data = np.arange(16, dtype=np.float64).reshape(4, 4)
     data[1, 1] = np.nan
-    x_out = np.asarray([1.0, -0.5, np.nextafter(-0.5, -np.inf),
-                        3.5, np.nextafter(3.5, -np.inf)])
-    y_out = np.asarray([1.0, 1.0, 1.0, 1.0, 1.0])
-    x_out = x_out.astype(dtype)
-    y_out = y_out.astype(dtype)
+    dtype = np.dtype(coordinate_dtype)
+    edge = lambda value, direction: np.nextafter(
+        dtype.type(value), dtype.type(direction)
+    )
+    x_out = np.asarray([
+        1.0, -0.5, edge(-0.5, -np.inf), edge(-0.5, np.inf),
+        edge(3.5, -np.inf), 3.5, edge(3.5, np.inf), 10000.0,
+    ], dtype=dtype)
+    y_out = np.asarray([
+        1.0, -0.5, -0.5, edge(-0.5, np.inf),
+        edge(3.5, -np.inf), 3.5, 3.5, 10000.0,
+    ], dtype=dtype)
 
-    def independent_fallback(x, y):
-        x_in, y_in = transform(x, y)
-        valid = (
-            np.isfinite(x_in) & np.isfinite(y_in)
-            & (x_in >= -0.5) & (x_in < 3.5)
-            & (y_in >= -0.5) & (y_in < 3.5)
-        )
-        return np.where(valid, x_in, np.nan), np.where(valid, y_in, np.nan)
+    def plain_delegate(x, y):
+        return transform(x, y)
+
+    mapped_x, mapped_y = transform(x_out, y_out)
+    expected_valid = (
+        np.isfinite(np.asarray(mapped_x))
+        & np.isfinite(np.asarray(mapped_y))
+        & (np.asarray(mapped_x) >= -0.5)
+        & (np.asarray(mapped_x) < 3.5)
+        & (np.asarray(mapped_y) >= -0.5)
+        & (np.asarray(mapped_y) < 3.5)
+    )
+    _, _, returned_valid = transform.pixel_map(
+        x_out, y_out, bounds_shape=(4, 4)
+    )
 
     capability_result = reproject_interp_core(
         data, x_out, y_out, transform, order=order
     )
     fallback_result = reproject_interp_core(
-        data, x_out, y_out, independent_fallback, order=order
+        data, x_out, y_out, plain_delegate, order=order
     )
     cap_values, cap_footprint = map(np.asarray, capability_result)
     fallback_values, fallback_footprint = map(np.asarray, fallback_result)
+    assert np.array_equal(np.asarray(returned_valid), expected_valid)
     np.testing.assert_array_equal(np.isnan(cap_values), np.isnan(fallback_values))
     np.testing.assert_array_equal(cap_footprint, fallback_footprint)
     np.testing.assert_array_equal(

@@ -93,6 +93,10 @@ def compose_transform(mwcs_in, mwcs_out, rotation):
     def transform(x_out, y_out):
         return reprojector.pix_to_pix(x_out, y_out)
 
+    def pixel_map(x_out, y_out, *, bounds_shape=None):
+        return reprojector.pixel_map(x_out, y_out, bounds_shape=bounds_shape)
+
+    transform.pixel_map = pixel_map
     return transform
 
 
@@ -128,6 +132,10 @@ def compose_transform_fp32(reprojector):
     def transform(x_out, y_out):
         return reprojector.pix_to_pix(x_out, y_out)
 
+    def pixel_map(x_out, y_out, *, bounds_shape=None):
+        return reprojector.pixel_map(x_out, y_out, bounds_shape=bounds_shape)
+
+    transform.pixel_map = pixel_map
     return transform
 
 
@@ -182,16 +190,12 @@ def build_transform(wcs_in, wcs_out, matrix_precision="f64"):
     CRPIX, CRVAL, SIP coefficients, projection code, and celestial frame)
     — calling this again with an equivalent
     WCS pair, even freshly reconstructed from the same header, returns the
-    *same* transform object rather than rebuilding it. This matters beyond
-    saving the (cheap) astropy-side work here: the returned ``transform`` is
-    passed as a static ``jax.jit`` argument by :mod:`reprojax.interp` and
-    :mod:`reprojax.adaptive`, so a fresh object forces a full retrace on the
-    next call — negligible for ``reproject_interp``, but expensive for
-    ``reproject_adaptive`` (its core differentiates *through* ``transform``,
-    and retracing an already-autodiff-heavy function, as SIP inversion is,
-    is costly regardless of whether the compiled executable ends up cached).
+    *same* transform object rather than rebuilding it. Reusing that object
+    also keeps the compiled interpolation/adaptive call paths on their
+    established cache key; a changed WCS fingerprint or static configuration
+    can require retracing, especially for the autodiff-heavy adaptive core.
     Reusing the same WCS pair across many calls (e.g. per-band exposures
-    sharing one pointing) now pays that cost once.
+    sharing one pointing) pays the construction and compilation costs once.
     """
     if matrix_precision not in MATRIX_PRECISIONS:
         raise ValueError(f"matrix_precision must be one of {MATRIX_PRECISIONS}, got {matrix_precision!r}")

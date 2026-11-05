@@ -32,6 +32,11 @@ with the following conventions:
   operations (no host callbacks, no data-dependent Python control flow) so
   that it can be used under ``jax.jit`` and differentiated with
   ``jax.grad``.
+
+Providers may optionally expose ``pixel_map(x_out, y_out, *,
+bounds_shape=(ny, nx))``. It returns finite mapped coordinates and a boolean
+validity mask; interpolation uses this capability when available and falls
+back to the two-result callable contract otherwise.
 """
 
 from typing import Any, Protocol, Tuple

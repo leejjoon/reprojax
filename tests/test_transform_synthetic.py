@@ -69,6 +69,23 @@ def assert_composed_transform_matches_astropy(
     return err
 
 
+def test_mapprojax_transform_exposes_optional_pixel_map():
+    h_out = make_header((90.0, 110.0), (180.01, 30.005), 1.2, rot_deg=8.0)
+    h_in = make_header((100.0, 100.0), (180.0, 30.0), 1.0)
+    transform = build_transform(WCS(h_in), WCS(h_out), matrix_precision="f32")
+    assert callable(getattr(transform, "pixel_map"))
+
+    x_out = np.asarray([0.0, 50.0, 199.0])
+    y_out = np.asarray([0.0, 100.0, 199.0])
+    x_in, y_in = transform(x_out, y_out)
+    mapped_x, mapped_y, valid = transform.pixel_map(
+        x_out, y_out, bounds_shape=(200, 200)
+    )
+    np.testing.assert_allclose(np.asarray(mapped_x), np.where(valid, x_in, 0.0))
+    np.testing.assert_allclose(np.asarray(mapped_y), np.where(valid, y_in, 0.0))
+    assert np.asarray(valid).dtype == bool
+
+
 def _frame(wcs):
     from astropy.wcs.utils import wcs_to_celestial_frame
 

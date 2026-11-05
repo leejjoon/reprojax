@@ -67,41 +67,47 @@ def reproject_interp_core(data, x_out, y_out, transform, order=1):
     if order not in SUPPORTED_ORDERS:
         raise ValueError(f"order must be one of {SUPPORTED_ORDERS} (bicubic and higher are not supported), got {order!r}")
 
-    x_in, y_in = transform(x_out, y_out)
-    coord_is_nan = jnp.isnan(x_in) | jnp.isnan(y_in)
-
     ny, nx = data.shape
-    # NaN coordinates (from the PixelTransform contract's invalid-point
-    # convention) must never reach map_coordinates, even though the final
-    # result at those positions is masked to NaN regardless: its *gradient*
-    # w.r.t. `data` is a scatter-add of (bilinear weight * upstream
-    # cotangent) into the neighboring data pixels, and a NaN coordinate
-    # makes that weight NaN. The upstream cotangent is correctly zeroed at
-    # invalid positions by the jnp.where below (and by any further masking a
-    # caller applies), but `nan * 0 = nan` in the scatter itself, corrupting
-    # the gradient at whatever data pixels the NaN coordinate's (undefined)
-    # floor happens to land on. Substituting a safe, finite, in-bounds
-    # coordinate here — its value is discarded by the NaN masking either
-    # way — keeps that scatter finite.
-    x_safe = jnp.where(coord_is_nan, 0.0, x_in)
-    y_safe = jnp.where(coord_is_nan, 0.0, y_in)
+    pixel_map = getattr(transform, "pixel_map", None)
+    has_pixel_map = callable(pixel_map)
+    if has_pixel_map:
+        x_in, y_in, valid = pixel_map(x_out, y_out, bounds_shape=(ny, nx))
+        coord_is_nan = ~valid
+    else:
+        x_in, y_in = transform(x_out, y_out)
+        coord_is_nan = jnp.isnan(x_in) | jnp.isnan(y_in)
+        valid = ~coord_is_nan
+    # Generic providers may return NaN coordinates, which must never reach
+    # map_coordinates: NaN interpolation weights can corrupt data gradients
+    # even when the final result is masked invalid. pixel_map providers
+    # already guarantee finite zero stand-ins, so they need no second
+    # sanitization pass.
+    if has_pixel_map:
+        x_safe, y_safe = x_in, y_in
+    else:
+        x_safe = jnp.where(coord_is_nan, 0.0, x_in)
+        y_safe = jnp.where(coord_is_nan, 0.0, y_in)
     y_clipped = _clip_border_pixels(y_safe, ny)
     x_clipped = _clip_border_pixels(x_safe, nx)
     coords = [y_clipped, x_clipped]
 
     result = map_coordinates(data, coords, order=order, mode="constant", cval=0.0)
 
-    # A second interpolation of an all-ones array of the same dtype-neutral
-    # precision as the coordinates: its value is exactly the fraction of
-    # interpolation weight that landed on in-bounds neighbors. This avoids
-    # relying on `cval=nan` propagating through interpolation (order 0 does
-    # not respect a NaN coordinate at all, and order 1's weighted sum can
-    # produce `nan * 0 = nan` for a neighbor at exactly zero weight — both
-    # of which would corrupt otherwise-valid, fully in-bounds pixels).
-    coverage_input = jnp.ones((ny, nx), dtype=jnp.float64)
-    coverage = map_coordinates(coverage_input, coords, order=order, mode="constant", cval=0.0)
-
-    valid_coord = (coverage >= 1.0 - _COVERAGE_VALID_THRESHOLD) & ~coord_is_nan
+    if has_pixel_map:
+        valid_coord = valid
+    else:
+        # For generic providers, retain the existing coverage interpolation:
+        # its value is the fraction of interpolation weight that landed on
+        # in-bounds neighbors.
+        coverage_input = jnp.ones((ny, nx), dtype=jnp.float64)
+        coverage = map_coordinates(
+            coverage_input, coords, order=order, mode="constant", cval=0.0
+        )
+        valid_coord = (
+            valid
+            & (coverage >= 1.0 - _COVERAGE_VALID_THRESHOLD)
+            & ~coord_is_nan
+        )
 
     result = jnp.where(valid_coord, result, jnp.nan).astype(data.dtype)
     # Footprint tracks the final result, not just coordinate validity: `data`

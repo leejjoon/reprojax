@@ -245,7 +245,49 @@ def test_footprint_semantics_are_self_consistent():
     np.testing.assert_array_equal(np.isnan(arr), footprint == 0.0)
 
 
-def test_footprint_is_zero_where_input_data_itself_is_nan():
+@pytest.mark.parametrize("order", [0, 1])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_pixel_map_capability_matches_independent_callable_fallback(order, dtype):
+    """Capability and fallback paths agree on a compact edge/NaN fixture."""
+    header = make_header(
+        (1.0, 1.0), (180.0, 30.0), 1.0, naxis=(4, 4)
+    )
+    transform = build_transform(WCS(header), WCS(header), matrix_precision="f64")
+    data = np.arange(16, dtype=np.float64).reshape(4, 4)
+    data[1, 1] = np.nan
+    x_out = np.asarray([1.0, -0.5, np.nextafter(-0.5, -np.inf),
+                        3.5, np.nextafter(3.5, -np.inf)])
+    y_out = np.asarray([1.0, 1.0, 1.0, 1.0, 1.0])
+    x_out = x_out.astype(dtype)
+    y_out = y_out.astype(dtype)
+
+    def independent_fallback(x, y):
+        x_in, y_in = transform(x, y)
+        valid = (
+            np.isfinite(x_in) & np.isfinite(y_in)
+            & (x_in >= -0.5) & (x_in < 3.5)
+            & (y_in >= -0.5) & (y_in < 3.5)
+        )
+        return np.where(valid, x_in, np.nan), np.where(valid, y_in, np.nan)
+
+    capability_result = reproject_interp_core(
+        data, x_out, y_out, transform, order=order
+    )
+    fallback_result = reproject_interp_core(
+        data, x_out, y_out, independent_fallback, order=order
+    )
+    cap_values, cap_footprint = map(np.asarray, capability_result)
+    fallback_values, fallback_footprint = map(np.asarray, fallback_result)
+    np.testing.assert_array_equal(np.isnan(cap_values), np.isnan(fallback_values))
+    np.testing.assert_array_equal(cap_footprint, fallback_footprint)
+    np.testing.assert_array_equal(
+        np.nan_to_num(cap_values, nan=0.0),
+        np.nan_to_num(fallback_values, nan=0.0),
+    )
+
+
+@pytest.mark.parametrize("order", [0, 1])
+def test_footprint_is_zero_where_input_data_itself_is_nan(order):
     """A masked/bad input pixel (real value NaN, not a coordinate-validity
     NaN) must also zero the footprint at output pixels that land on it —
     the actual real-data failure mode ticket #4 caught, where footprint had
@@ -257,7 +299,9 @@ def test_footprint_is_zero_where_input_data_itself_is_nan():
     data = _random_data(h_in)
     data[100, 100] = np.nan  # squarely inside the field, at a valid coordinate
 
-    arr, footprint = reproject_interp((data, WCS(h_in)), WCS(h_out), shape_out=(200, 200))
+    arr, footprint = reproject_interp(
+        (data, WCS(h_in)), WCS(h_out), shape_out=(200, 200), order=order
+    )
     arr, footprint = np.asarray(arr), np.asarray(footprint)
 
     assert np.isnan(arr[100, 100])
@@ -338,6 +382,42 @@ def test_core_is_jit_able():
     # inverse one value of 40000 differs by 1.2e-10 relative (4.6e-12 abs).
     np.testing.assert_allclose(np.asarray(eager[0]), np.asarray(jitted[0]), rtol=2e-10, equal_nan=True)
     np.testing.assert_array_equal(np.asarray(eager[1]), np.asarray(jitted[1]))
+
+
+def test_core_keeps_plain_callable_fallback():
+    data = np.arange(9, dtype=np.float64).reshape(3, 3)
+
+    def plain_transform(x_out, y_out):
+        return x_out, y_out
+
+    result, footprint = reproject_interp_core(
+        data,
+        np.asarray([[0.0, 1.0], [2.0, 0.25]]),
+        np.asarray([[0.0, 1.0], [2.0, 0.25]]),
+        plain_transform,
+        order=1,
+    )
+    assert result.shape == footprint.shape == (2, 2)
+    assert np.all(np.isfinite(result))
+    np.testing.assert_array_equal(np.asarray(footprint), 1.0)
+
+
+@pytest.mark.parametrize("order", [0, 1])
+def test_core_clips_outer_half_pixel_without_partial_coverage(order):
+    data = np.arange(9, dtype=np.float64).reshape(3, 3)
+
+    def plain_transform(x_out, y_out):
+        return x_out, y_out
+
+    result, footprint = reproject_interp_core(
+        data,
+        np.asarray([[-0.25, 2.25]]),
+        np.asarray([[1.0, 1.0]]),
+        plain_transform,
+        order=order,
+    )
+    np.testing.assert_array_equal(np.asarray(result), [[3.0, 5.0]])
+    np.testing.assert_array_equal(np.asarray(footprint), [[1.0, 1.0]])
 
 
 # ---------------------------------------------------------------------------

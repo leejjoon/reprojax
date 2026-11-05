@@ -26,6 +26,10 @@ for the current milestone plan (spec in #1).
 - `reprojax.transform` — builds a `PixelTransform` from a pair of astropy
   WCS objects, using mapprojax for the projection math and astropy for
   celestial frame rotation.
+- Mapprojax-backed transforms also expose an optional
+  `transform.pixel_map(x_out, y_out, bounds_shape=(ny, nx))` capability. It
+  supplies finite coordinates and geometric validity to interpolation while
+  the two-result callable contract remains available for generic providers.
 
 ## Development
 

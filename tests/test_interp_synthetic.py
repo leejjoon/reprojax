@@ -246,12 +246,11 @@ def test_footprint_semantics_are_self_consistent():
 
 
 @pytest.mark.parametrize("order", [0, 1])
-@pytest.mark.parametrize(
-    "matrix_precision,coordinate_dtype",
-    [("f32", np.float32), ("f64", np.float64)],
-)
+@pytest.mark.parametrize("matrix_precision", ["f32", "f64"])
+@pytest.mark.parametrize("coordinate_dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("geometrically_invalid", [False, True])
 def test_pixel_map_capability_matches_plain_callable_fallback(
-    order, matrix_precision, coordinate_dtype
+    order, matrix_precision, coordinate_dtype, geometrically_invalid
 ):
     """Capability and plain-callable paths agree on an edge/NaN fixture."""
     header = make_header(
@@ -271,6 +270,8 @@ def test_pixel_map_capability_matches_plain_callable_fallback(
         np.asarray([1.0], dtype=coordinate_dtype),
     )
     assert np.isnan(np.asarray(invalid_x)).any() or np.isnan(np.asarray(invalid_y)).any()
+    if geometrically_invalid:
+        transform = invalid_transform
     data = np.arange(16, dtype=np.float64).reshape(4, 4)
     data[1, 1] = np.nan
     dtype = np.dtype(coordinate_dtype)
@@ -291,6 +292,8 @@ def test_pixel_map_capability_matches_plain_callable_fallback(
         return transform(x, y)
 
     mapped_x, mapped_y = transform(x_out, y_out)
+    if geometrically_invalid:
+        assert np.isnan(np.asarray(mapped_x)).any() or np.isnan(np.asarray(mapped_y)).any()
     expected_valid = (
         np.isfinite(np.asarray(mapped_x))
         & np.isfinite(np.asarray(mapped_y))

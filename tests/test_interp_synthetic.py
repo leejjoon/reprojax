@@ -260,6 +260,17 @@ def test_pixel_map_capability_matches_plain_callable_fallback(
     transform = build_transform(
         WCS(header), WCS(header), matrix_precision=matrix_precision
     )
+    far_header = make_header(
+        (1.0, 1.0), (330.0, 30.0), 1.0, naxis=(4, 4)
+    )
+    invalid_transform = build_transform(
+        WCS(header), WCS(far_header), matrix_precision=matrix_precision
+    )
+    invalid_x, invalid_y = invalid_transform(
+        np.asarray([1.0], dtype=coordinate_dtype),
+        np.asarray([1.0], dtype=coordinate_dtype),
+    )
+    assert np.isnan(np.asarray(invalid_x)).any() or np.isnan(np.asarray(invalid_y)).any()
     data = np.arange(16, dtype=np.float64).reshape(4, 4)
     data[1, 1] = np.nan
     dtype = np.dtype(coordinate_dtype)
@@ -268,11 +279,12 @@ def test_pixel_map_capability_matches_plain_callable_fallback(
     )
     x_out = np.asarray([
         1.0, -0.5, edge(-0.5, -np.inf), edge(-0.5, np.inf),
-        edge(3.5, -np.inf), 3.5, edge(3.5, np.inf), 10000.0,
+        edge(3.5, -np.inf), 3.5, edge(3.5, np.inf), 1.0, 1.0, 10000.0,
     ], dtype=dtype)
     y_out = np.asarray([
         1.0, -0.5, -0.5, edge(-0.5, np.inf),
-        edge(3.5, -np.inf), 3.5, 3.5, 10000.0,
+        edge(3.5, -np.inf), 3.5, 3.5, edge(-0.5, -np.inf),
+        edge(3.5, np.inf), 10000.0,
     ], dtype=dtype)
 
     def plain_delegate(x, y):

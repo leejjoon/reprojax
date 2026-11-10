@@ -510,4 +510,4 @@ publish with attestations; 0.2.0 is the only release without them.
 | --- | --- |
 | Trusted publisher created on the `reprojax` project | 2026-11-11 (operator) |
 | API token revoked, `PYPI_API_TOKEN` secret removed | 2026-11-11 (operator) |
-| Reverting commit `{{SHA}}` | 2026-11-11 |
+| Reverting commit `a7071947db8a6c7b47c9a794b851aaa150e9d0ff` | 2026-11-11 |

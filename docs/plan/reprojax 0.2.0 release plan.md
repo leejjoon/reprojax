@@ -473,3 +473,41 @@ publisher, so nothing reserves a future name before first upload.
   was resolved** from PyPI, pulls runtime dependencies only (no `reproject`),
   and runs the README quick start; `docs/release/0.2.0.md` records it — which
   also closes the mapprojax plan's last open item.
+
+## Correction — 2026-11-11: D-TOKEN revisited
+
+Appended; the D-TOKEN block above is left as written for the record.
+
+**Process.** The switch from Trusted Publishing to an API token did not get the
+committee review this plan's other mechanism changes got. It was adopted and
+executed inside one release session and accepted by the operator only through
+creating the token and approving the resulting `publish` job. A workable
+credential is not the same thing as a reviewed one, and the plan should not
+imply otherwise.
+
+**Attestations.** Because the upload carried no OIDC identity, **0.2.0 has no
+PEP 740 attestations**. PyPI's provenance endpoint returns 404 for both files
+(`/integrity/reprojax/0.2.0/<file>/provenance`) and the index JSON has no
+`provenance` key. Hashes still pin the bytes; nothing pins the builder.
+
+**The name-claim claim in D-TOKEN was wrong.** It said a token upload "claims
+an unregistered name at upload time", implying pending publishers claim
+earlier. PyPI documents that a pending publisher *"does not create a project
+or reserve a project's name until it is actually used to publish"* — so
+neither reserves anything pre-upload, and the token bought no name security.
+The project now exists under the operator's account; the name is held by the
+project, not by a publisher.
+
+**State now.** A normal Trusted Publisher exists on the project (`leejjoon` /
+`reprojax` / `publish.yml` / `pypi`). The token was revoked and the
+`PYPI_API_TOKEN` secret is retired; `publish.yml` is back to OIDC with
+`id-token: write` on the `publish` job only. The `pypi` environment (reviewer
+`leejjoon`, self-review allowed, admin bypass off, one `v*` tag policy) and
+both rulesets are unchanged, and remain the protection. Future releases
+publish with attestations; 0.2.0 is the only release without them.
+
+| Event | When |
+| --- | --- |
+| Trusted publisher created on the `reprojax` project | 2026-11-11 (operator) |
+| API token revoked, `PYPI_API_TOKEN` secret removed | 2026-11-11 (operator) |
+| Reverting commit `{{SHA}}` | 2026-11-11 |

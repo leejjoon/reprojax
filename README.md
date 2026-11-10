@@ -140,9 +140,15 @@ backend comparison, and the CPU skips the batched GPU-only tests.
 ## Development
 
 ```bash
-pip install -e ".[test]"
-pytest tests/
+python -m pip install -e ".[test]" -c ci/latest.txt
+python -m pytest tests/
 ```
+
+Using a `ci/` constraints file matters: the golden reference is pinned to
+`reproject==0.21.0` there, and the suite asserts the installed version. Use
+`ci/minimum.txt` for the oldest supported stack (Python 3.11). If a
+constraint conflicts with your environment, install `.[test]` without it and
+expect the version guard to tell you which pin is off.
 
 The test suite needs `tests/data/`, which is 16 MB of real SPHEREx
 exposures and is therefore not shipped in the sdist. Install from a checkout

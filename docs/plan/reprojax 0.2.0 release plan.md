@@ -185,7 +185,10 @@ CPU-only hosted matrix; every action pinned by SHA.
 - [ ] Lead with the precision rule: default `"f64"` needs
       `jax.config.update("jax_enable_x64", True)`; `"f32"` needs no x64 and is
       the GPU-throughput path; the same rule applies to `reproject_adaptive`.
-- [ ] `CHANGELOG.md`: first public release; `PixelTransform` contract;
+- [ ] `CHANGELOG.md`: **dated at publication** (post-G7, in the G8 commit),
+      since it is not an sdist input; until then the heading reads
+      `## 0.2.0 — unreleased`. Entry content: first public release;
+      `PixelTransform` contract;
       `reproject_interp` / `reproject_adaptive` / batched variant; `pixel_map`
       validity capability; both precision modes; `mapprojax>=0.3.0,<0.4`.
 - [ ] `tests/data/README.md`: provenance, terms, checksums —
@@ -212,18 +215,22 @@ CPU-only hosted matrix; every action pinned by SHA.
          workflow `publish.yml`, environment `pypi`.
       2. **`pypi` environment**: reviewer `leejjoon`, self-review allowed,
          admin bypass **off**, deployment restricted to `v*` tags.
-      3. **`v*` tag ruleset** blocking update and delete.
-      4. **`main` ruleset** blocking force pushes and deletion, with **no
-         required checks** (we push directly to `main`).
+      3. **`v*` tag ruleset** with exactly the `update` and `deletion` rules.
+      4. **`main` ruleset** with exactly `deletion` and `non_fast_forward` —
+         **no `update` rule** (we push directly to `main`) and **no required
+         status checks**.
       Evidence is read-only API, and it must show the *contents*, not just
       existence:
       - `gh api repos/leejjoon/reprojax/rulesets` to list IDs, then
         `gh api repos/leejjoon/reprojax/rulesets/<id>` for each, verifying
         `enforcement == "active"`, the `ref_name` targeting (`refs/tags/v*` for
-        the tag ruleset, `refs/heads/main` for the branch ruleset), the
-        `update` / `deletion` rules on both, `non_fast_forward` on `main`,
-        `required_status_checks` **absent** on `main`, and `bypass_actors == []`
-        on every rule;
+        the tag ruleset, `refs/heads/main` for the branch ruleset), and
+        `bypass_actors == []` on both. Then the exact rule set, which is the
+        part that is easy to get wrong:
+        - tag ruleset: `update` and `deletion`, and nothing else;
+        - `main` ruleset: `deletion` and `non_fast_forward`, and nothing else
+          — in particular **no `update`** and **no `required_status_checks`,
+          since main is pushed to directly;
       - `gh api repos/leejjoon/reprojax/environments/pypi`, verifying
         `can_admins_bypass == false`; a `required_reviewers` protection rule
         whose `reviewers` contains `leejjoon` with
@@ -250,7 +257,10 @@ CPU-only hosted matrix; every action pinned by SHA.
       the README quick start from a fresh install of the wheel and of the
       sdist. Record run ID, attempt, artifact ID and expiry, plus interpreter,
       JAX/plugin versions and device.
-- [ ] **G5 — tag S itself.** `git tag v0.2.0 S` and push the tag. No commit is
+- [ ] **G5 — tag S itself.** `git tag v0.2.0 S` and push the tag. Do not
+      re-run or re-dispatch CI on S between G4 and this step (see the rules
+      below: `validate` requires exactly one successful run, one artifact).
+      No commit is
       made between G4 and the tag, and no commit is added to change the release
       record. S therefore does **not** contain `docs/release/0.2.0.md`; that
       record lands later, and the tag's identity is the byte source, not the
@@ -263,15 +273,19 @@ CPU-only hosted matrix; every action pinned by SHA.
         `SHA256SUMS`, and that the wheel's version equals the tag minus `v`.
         Print every hash so the operator can compare them with G4's.
       - **handoff**: `publish` declares `needs: validate` and never proceeds
-        if `validate` fails. `validate` emits the chosen run ID, attempt,
-        artifact ID and the `SHA256SUMS` hash as job outputs, so `publish`
-        receives identities rather than rediscovering them.
-      - **`publish`** (`environment: pypi`, `needs: validate`): the only job
-        with `id-token: write`. **After** environment approval it downloads
-        that exact artifact **by ID** — never by name — and confirms the run,
-        attempt, expiry and file hashes are unchanged from `validate`'s
-        outputs. It then uploads **only** the wheel and the sdist. It never
-        rebuilds and never re-selects an artifact.
+        if `validate` fails. `validate` declares the original run ID,
+        attempt, artifact ID, expiry and the `SHA256SUMS` hash as job
+        outputs. There is **no intermediate artifact copy**: `validate` writes
+        nothing back to Actions storage.
+      - **`publish`** (`environment: pypi`, `needs: validate`, permissions
+        `id-token: write`, `actions: read`, `contents: read`): the only job
+        with `id-token: write`. **After** environment approval it re-reads the
+        original run and artifact by ID, confirms the run is still
+        completed/success on the same attempt and the artifact is unexpired
+        with an unchanged expiry, downloads **that** artifact by ID — never by
+        name — re-verifies `SHA256SUMS` and the staged inventory, then uploads
+        **only** the wheel and the sdist. It never rebuilds and never
+        re-selects an artifact.
 - [ ] **G6 — approve the protected `publish` job.** Before approving, compare
       `validate`'s printed run ID, attempt, artifact ID, expiry and hashes with
       the G4 record; any difference stops the release and returns to G4.
@@ -279,10 +293,11 @@ CPU-only hosted matrix; every action pinned by SHA.
       `SHA256SUMS`; a fresh `pip install reprojax==0.2.0` in a clean venv
       resolves `mapprojax==0.3.0`; runtime dependencies only, no `reproject`;
       and runs the README quick start.
-- [ ] **G8 — the release record, written once.** Add `docs/release/0.2.0.md`
-      in a single commit **after** G7: S, tag, artifact IDs and hashes, the G4
-      matrix, the ROCm result, and the PyPI verification. Append-only from
-      then on.
+- [ ] **G8 — the release record, written once.** In a single commit **after**
+      G7, add `docs/release/0.2.0.md` (S, tag, artifact IDs and hashes, the G4
+      matrix, the ROCm result, the PyPI verification) **and** set the
+      `CHANGELOG.md` date. Append-only from then on. Both are outside the
+      sdist, so neither changes a published byte.
 - [ ] Optional, non-blocking: GitHub Release notes for `v0.2.0`; repo topics
       (`astronomy`, `fits`, `jax`, `wcs`, `reprojection`).
 
@@ -292,8 +307,15 @@ CPU-only hosted matrix; every action pinned by SHA.
   0.2.1.** Never move the tag; PyPI file names are permanent.
 - **Any replacement artifact repeats the full G4 gate.** A re-built wheel is a
   new candidate even if the commit is unchanged.
-- **Infrastructure re-runs** (a flaky job, an artifact re-download) need
-  explicit authorization and never silently change which bytes ship.
+- **Never re-run CI on S after G4.** The packaging job uploads an artifact
+  named `release-dist`; a second run on the same SHA would either fail on the
+  duplicate artifact name or leave two candidate artifacts, and `validate`
+  (which finds the *single* successful run for the tag's SHA) would then find
+  none usable. A CI re-run on S after the gate invalidates the gate: treat it
+  as a new candidate and repeat G4, or make a new commit and a new S.
+- **Infrastructure re-runs** elsewhere (a flaky job before the gate, an
+  artifact re-download) need explicit authorization and never silently change
+  which bytes ship.
 - **No ported release machinery.** Do not port `release_artifact.py`,
   `check_installed_artifacts.py`, the input digest, the candidate marker, or the
   closure fences. This release is: one CI build, one artifact, one gate, one

@@ -63,10 +63,35 @@ header):
 | `CTYPE1`, `CTYPE2` | `GLON-TAN`, `GLAT-TAN` |
 | `CRVAL1`, `CRVAL2` | 78.9293, 0.48367 |
 | `LONPOLE` | 180.0 |
+| `LATPOLE` | 0.48367 |
+| `CRPIX1`, `CRPIX2` | 601.0, 601.0 |
+| `CDELT1`, `CDELT2` | -0.0016666666666667, 0.0016666666666667 |
+| `BITPIX`, `NAXIS` | -64, 2 (no pixel data; `EXTEND` = T) |
+| `WCSAXES`, `MJDREF` | 2, 0.0 |
 
 It is the Galactic-frame mosaicking template used for this exposure in the
 original pre-reprojax workflow, so the tests run the same
 ICRS TAN+SIP → Galactic TAN operation that workflow performed by hand.
+
+**Provenance, separately from the exposure.** This file's origin is *not*
+the same as `spherex_l2b_v20.fits`'s, and should not be described as one.
+
+It is a **header-only extraction**: an IPAC-table-style text header
+(`CDELT` + `CRVAL`, no `CD` matrix) taken from the 1201x1201 Galactic TAN
+mosaic template used as the output grid in the pre-reprojax workflow. That
+source template is a real mosaic with pixel data; none of it is here. The
+20 cards above are exactly the source template's 20 cards, in order —
+verified by card-for-card comparison.
+
+What the header does **not** tell you: it carries no `OBSID`, no `DATE-OBS`,
+no `ORIGIN`/`AUTHOR`, and no pipeline `HISTORY` trail, so the file itself
+names neither its producer nor its licence. Treat it as project test
+metadata under the same BSD-3-Clause terms as reprojax, and confirm with the
+repository owner if you redistribute it separately.
+
+Because it is only WCS parameters — `CTYPE`, `CRVAL`, `CRPIX`, `CDELT` for
+a Galactic TAN grid — it is trivially reproducible if the file is ever
+replaced or its terms become a problem.
 
 ## Terms
 

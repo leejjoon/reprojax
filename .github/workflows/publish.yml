@@ -1,0 +1,201 @@
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read # list ci.yml runs, read and download the release-dist artifact
+    outputs:
+      run_id: ${{ steps.locate.outputs.run_id }}
+      run_attempt: ${{ steps.locate.outputs.run_attempt }}
+      artifact_id: ${{ steps.locate.outputs.artifact_id }}
+      sums_sha256: ${{ steps.locate.outputs.sums_sha256 }}
+      version: ${{ steps.locate.outputs.version }}
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          freethreaded: false
+
+      - name: Locate, download and verify the release artifact
+        id: locate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess, zipfile, glob, hashlib, pathlib, sys
+
+          repo, sha, tag = os.environ["REPO"], os.environ["SHA"], os.environ["TAG"]
+          out = os.environ["GITHUB_OUTPUT"]
+
+          def api(*args):
+              return json.loads(subprocess.run(
+                  ["gh", "api", *args], check=True, capture_output=True, text=True).stdout)
+
+          def emit(**kw):
+              with open(out, "a") as fh:
+                  for k, v in kw.items():
+                      fh.write(f"{k}={v}\n")
+
+          # 1. Exactly one successful ci.yml run on main for this SHA.
+          runs = api(f"repos/{repo}/actions/workflows/ci.yml/runs"
+                     f"?head_sha={sha}&event=push&per_page=100")["workflow_runs"]
+          good = [r for r in runs
+                  if r["head_sha"] == sha and r["head_branch"] == "main"
+                  and r["status"] == "completed" and r["conclusion"] == "success"]
+          if len(good) != 1:
+              sys.exit(f"expected exactly 1 successful ci.yml run on main for {sha}, found {len(good)}")
+          run = good[0]
+
+          # 2. Exactly one release-dist artifact in that run, unexpired.
+          arts = api(f"repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100")["artifacts"]
+          named = [a for a in arts if a["name"] == "release-dist"]
+          if len(named) != 1:
+              sys.exit(f"expected exactly 1 release-dist artifact, found {len(named)}")
+          art = named[0]
+          if art.get("expired"):
+              sys.exit(f"release-dist artifact {art['id']} expired")
+
+          # 3. Download by ID, never by name-based selection.
+          dest = pathlib.Path(os.environ["RUNNER_TEMP"]) / "release-dist"
+          dest.mkdir(parents=True, exist_ok=True)
+          zip_path = dest.parent / "dist.zip"
+          with open(zip_path, "wb") as fh:
+              subprocess.run(
+                  ["gh", "api", f"repos/{repo}/actions/artifacts/{art['id']}/zip"],
+                  check=True, stdout=fh)
+          subprocess.run(["unzip", "-q", "-o", str(zip_path), "-d", str(dest)], check=True)
+
+          # 4. Verify SHA256SUMS.
+          sums_path = dest / "SHA256SUMS"
+          if not sums_path.exists():
+              sys.exit("release-dist has no SHA256SUMS")
+          sums_sha256 = hashlib.sha256(sums_path.read_bytes()).hexdigest()
+          subprocess.run(["sha256sum", "--check", "--strict", "SHA256SUMS"],
+                         cwd=dest, check=True)
+
+          # 5. Wheel version equals the tag minus "v".
+          wheels = glob.glob(str(dest / "*.whl"))
+          if len(wheels) != 1:
+              sys.exit(f"expected exactly 1 wheel, found {wheels}")
+          with zipfile.ZipFile(wheels[0]) as zf:
+              meta = [n for n in zf.namelist() if n.endswith(".dist-info/METADATA")]
+              if len(meta) != 1:
+                  sys.exit(f"ambiguous wheel metadata: {meta}")
+              version = next(
+                  line.split(":", 1)[1].strip()
+                  for line in zf.read(meta[0]).decode().splitlines()
+                  if line.startswith("Version:"))
+          if version != tag.removeprefix("v"):
+              sys.exit(f"wheel version {version} != tag {tag}")
+
+          emit(run_id=run["id"], run_attempt=run["run_attempt"],
+               artifact_id=art["id"], sums_sha256=sums_sha256,
+               version=version, expires_at=art.get("expires_at", ""))
+
+          print(f"run {run['id']} attempt {run['run_attempt']}")
+          print(f"artifact {art['id']} (expires {art.get('expires_at')})")
+          print(f"version {version}, SHA256SUMS {sums_sha256}")
+          print(sums_path.read_text())
+
+          summary = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary, "a") as fh:
+              fh.write("### Release artifact identities — compare with the G4 record\n\n")
+              fh.write(f"- run: `{run['id']}` attempt `{run['run_attempt']}`\n")
+              fh.write(f"- artifact: `{art['id']}` expires `{art.get('expires_at')}`\n")
+              fh.write(f"- tag: `{tag}`, wheel version `{version}`\n")
+              fh.write(f"- `SHA256SUMS` sha256: `{sums_sha256}`\n\n```\n")
+              fh.write(sums_path.read_text())
+              fh.write("```\n")
+          PY
+
+      - name: Persist the verified distribution files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-verified
+          path: |
+            ${{ runner.temp }}/release-dist/*.whl
+            ${{ runner.temp }}/release-dist/*.tar.gz
+            ${{ runner.temp }}/release-dist/SHA256SUMS
+          retention-days: 90
+          if-no-files-found: error
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write # trusted publishing; this is the only job with it
+      contents: read
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          freethreaded: false
+
+      - name: Download the verified artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-verified
+          path: ${{ runner.temp }}/release-dist
+
+      - name: Re-verify the exact bytes
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/release-dist"
+          echo "artifact ${{ needs.validate.outputs.artifact_id }} \
+          from run ${{ needs.validate.outputs.run_id }} \
+          attempt ${{ needs.validate.outputs.run_attempt }}"
+          sha256sum --check --strict SHA256SUMS
+          actual=$(sha256sum SHA256SUMS | cut -d' ' -f1)
+          expected='${{ needs.validate.outputs.sums_sha256 }}'
+          if [ "$actual" != "$expected" ]; then
+            echo "SHA256SUMS changed between validate and publish" >&2
+            exit 1
+          fi
+          python - <<'PY'
+          import glob, os, zipfile
+          wheels = glob.glob("*.whl")
+          assert len(wheels) == 1, wheels
+          with zipfile.ZipFile(wheels[0]) as zf:
+              meta = [n for n in zf.namelist() if n.endswith(".dist-info/METADATA")][0]
+              version = next(line.split(":", 1)[1].strip()
+                             for line in zf.read(meta).decode().splitlines()
+                             if line.startswith("Version:"))
+          expected = os.environ["GITHUB_REF_NAME"]
+          assert "v" + version == expected, (version, expected)
+          print("version", version)
+          PY
+          ls -l
+      - name: Stage only the wheel and sdist
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/upload"
+          cp "$RUNNER_TEMP"/release-dist/*.whl "$RUNNER_TEMP"/release-dist/*.tar.gz "$RUNNER_TEMP/upload/"
+          ls -l "$RUNNER_TEMP/upload"
+
+      - name: Upload
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
+        with:
+          packages-dir: ${{ runner.temp }}/upload
+
+      - name: Confirm exactly two distributions were staged
+        run: |
+          set -euo pipefail
+          count=$(ls -1 "$RUNNER_TEMP"/upload/*.whl "$RUNNER_TEMP"/upload/*.tar.gz | wc -l)
+          if [ "$count" != "2" ]; then
+            echo "expected exactly 2 distributions, found $count" >&2
+            exit 1
+          fi

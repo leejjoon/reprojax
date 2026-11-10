@@ -1,0 +1,8 @@
+# The sdist carries the package, not the test suite or the FITS fixtures:
+# tests/ depends on tests/data/ (16 MB of real exposures), which no consumer
+# needs, and shipping tests without their fixtures leaves a suite that cannot
+# even be collected. Tests run from a checkout and from CI instead.
+prune tests
+prune benchmarks
+prune examples
+prune docs

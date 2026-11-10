@@ -29,6 +29,11 @@ from reproject.adaptive import reproject_adaptive as original_reproject_adaptive
 from reprojax import build_transform, reproject_adaptive, reproject_interp
 from reprojax.transform import _mapprojax_wcs
 
+# The golden reference. Tolerances in this module were tuned against this
+# exact version; upgrading it moves the baseline, not just the tool.
+# `ci/minimum.txt` and `ci/latest.txt` pin the same version.
+REFERENCE_REPROJECT_VERSION = "0.21.0"
+
 DATA_DIR = Path(__file__).parent / "data"
 
 SKY_TOL_UAS = 10.0
@@ -50,6 +55,21 @@ def spherex_data():
 @pytest.fixture(scope="module")
 def template_header():
     return fits.Header.fromtextfile(DATA_DIR / "galactic_template_header.fits")
+
+
+def test_reference_reproject_version():
+    """Guard the pinned golden reference.
+
+    An upgraded reference changes the numbers this module compares against,
+    so the pin has to match what is installed.
+    """
+    import importlib.metadata
+
+    installed = importlib.metadata.version("reproject")
+    assert installed == REFERENCE_REPROJECT_VERSION, (
+        f"golden reference is pinned to {REFERENCE_REPROJECT_VERSION}, "
+        f"but reproject {installed} is installed"
+    )
 
 
 # ---------------------------------------------------------------------------

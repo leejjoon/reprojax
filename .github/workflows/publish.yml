@@ -12,11 +12,12 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      actions: read # list ci.yml runs, read and download the release-dist artifact
+      actions: read # list ci.yml runs and read the release-dist artifact
     outputs:
       run_id: ${{ steps.locate.outputs.run_id }}
       run_attempt: ${{ steps.locate.outputs.run_attempt }}
       artifact_id: ${{ steps.locate.outputs.artifact_id }}
+      expires_at: ${{ steps.locate.outputs.expires_at }}
       sums_sha256: ${{ steps.locate.outputs.sums_sha256 }}
       version: ${{ steps.locate.outputs.version }}
     steps:
@@ -25,7 +26,7 @@ jobs:
           python-version: '3.12'
           freethreaded: false
 
-      - name: Locate, download and verify the release artifact
+      - name: Locate and verify the release artifact
         id: locate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,17 +36,18 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, subprocess, zipfile, glob, hashlib, pathlib, sys
+          import glob, hashlib, json, os, pathlib, subprocess, sys, zipfile
 
           repo, sha, tag = os.environ["REPO"], os.environ["SHA"], os.environ["TAG"]
-          out = os.environ["GITHUB_OUTPUT"]
+          tmp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          dist = tmp / "release-dist"
 
           def api(*args):
               return json.loads(subprocess.run(
                   ["gh", "api", *args], check=True, capture_output=True, text=True).stdout)
 
           def emit(**kw):
-              with open(out, "a") as fh:
+              with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
                   for k, v in kw.items():
                       fh.write(f"{k}={v}\n")
 
@@ -59,7 +61,7 @@ jobs:
               sys.exit(f"expected exactly 1 successful ci.yml run on main for {sha}, found {len(good)}")
           run = good[0]
 
-          # 2. Exactly one release-dist artifact in that run, unexpired.
+          # 2. Exactly one release-dist artifact there, unexpired.
           arts = api(f"repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100")["artifacts"]
           named = [a for a in arts if a["name"] == "release-dist"]
           if len(named) != 1:
@@ -69,51 +71,71 @@ jobs:
               sys.exit(f"release-dist artifact {art['id']} expired")
 
           # 3. Download by ID, never by name-based selection.
-          dest = pathlib.Path(os.environ["RUNNER_TEMP"]) / "release-dist"
-          dest.mkdir(parents=True, exist_ok=True)
-          zip_path = dest.parent / "dist.zip"
-          with open(zip_path, "wb") as fh:
-              subprocess.run(
-                  ["gh", "api", f"repos/{repo}/actions/artifacts/{art['id']}/zip"],
-                  check=True, stdout=fh)
-          subprocess.run(["unzip", "-q", "-o", str(zip_path), "-d", str(dest)], check=True)
+          dist.mkdir(parents=True, exist_ok=True)
+          with open(tmp / "dist.zip", "wb") as fh:
+              subprocess.run(["gh", "api",
+                              f"repos/{repo}/actions/artifacts/{art['id']}/zip"],
+                             check=True, stdout=fh)
+          subprocess.run(["unzip", "-q", "-o", str(tmp / "dist.zip"), "-d", str(dist)],
+                         check=True)
 
-          # 4. Verify SHA256SUMS.
-          sums_path = dest / "SHA256SUMS"
-          if not sums_path.exists():
-              sys.exit("release-dist has no SHA256SUMS")
-          sums_sha256 = hashlib.sha256(sums_path.read_bytes()).hexdigest()
-          subprocess.run(["sha256sum", "--check", "--strict", "SHA256SUMS"],
-                         cwd=dest, check=True)
+          # 4. Inventory: exactly one wheel and one sdist, matching the tag,
+          #    nothing else, and SHA256SUMS covering exactly those two.
+          expected_version = tag.removeprefix("v")
+          wheels = sorted(glob.glob(str(dist / "*.whl")))
+          sdists = sorted(glob.glob(str(dist / "*.tar.gz")))
+          if len(wheels) != 1 or len(sdists) != 1:
+              sys.exit(f"expected 1 wheel + 1 sdist, found {wheels} + {sdists}")
+          want = {
+              f"reprojax-{expected_version}-py3-none-any.whl",
+              f"reprojax-{expected_version}.tar.gz",
+          }
+          got = {pathlib.Path(p).name for p in wheels + sdists}
+          if got != want:
+              sys.exit(f"release-dist names {got} != expected {want}")
+          extra = {p.name for p in dist.iterdir()} - want - {"SHA256SUMS"}
+          if extra:
+              sys.exit(f"release-dist has unexpected files: {sorted(extra)}")
 
-          # 5. Wheel version equals the tag minus "v".
-          wheels = glob.glob(str(dest / "*.whl"))
-          if len(wheels) != 1:
-              sys.exit(f"expected exactly 1 wheel, found {wheels}")
           with zipfile.ZipFile(wheels[0]) as zf:
               meta = [n for n in zf.namelist() if n.endswith(".dist-info/METADATA")]
               if len(meta) != 1:
                   sys.exit(f"ambiguous wheel metadata: {meta}")
-              version = next(
-                  line.split(":", 1)[1].strip()
-                  for line in zf.read(meta[0]).decode().splitlines()
-                  if line.startswith("Version:"))
-          if version != tag.removeprefix("v"):
+              version = next(line.split(":", 1)[1].strip()
+                             for line in zf.read(meta[0]).decode().splitlines()
+                             if line.startswith("Version:"))
+          if version != expected_version:
               sys.exit(f"wheel version {version} != tag {tag}")
 
+          sums_path = dist / "SHA256SUMS"
+          if not sums_path.exists():
+              sys.exit("release-dist has no SHA256SUMS")
+          listed = {}
+          for line in sums_path.read_text().splitlines():
+              if not line.strip():
+                  continue
+              digest, name = line.split(None, 1)
+              listed[name.strip().lstrip("*")] = digest
+          if set(listed) != want:
+              sys.exit(f"SHA256SUMS covers {sorted(listed)} != {sorted(want)}")
+          for name, digest in listed.items():
+              actual = hashlib.sha256((dist / name).read_bytes()).hexdigest()
+              if actual != digest:
+                  sys.exit(f"{name} sha256 {actual} != SHA256SUMS {digest}")
+
+          sums_sha256 = hashlib.sha256(sums_path.read_bytes()).hexdigest()
           emit(run_id=run["id"], run_attempt=run["run_attempt"],
-               artifact_id=art["id"], sums_sha256=sums_sha256,
-               version=version, expires_at=art.get("expires_at", ""))
+               artifact_id=art["id"], expires_at=art.get("expires_at", ""),
+               sums_sha256=sums_sha256, version=version)
 
           print(f"run {run['id']} attempt {run['run_attempt']}")
-          print(f"artifact {art['id']} (expires {art.get('expires_at')})")
+          print(f"artifact {art['id']} expires {art.get('expires_at')}")
           print(f"version {version}, SHA256SUMS {sums_sha256}")
           print(sums_path.read_text())
 
-          summary = os.environ["GITHUB_STEP_SUMMARY"]
-          with open(summary, "a") as fh:
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
               fh.write("### Release artifact identities — compare with the G4 record\n\n")
-              fh.write(f"- run: `{run['id']}` attempt `{run['run_attempt']}`\n")
+              fh.write(f"- original run: `{run['id']}` attempt `{run['run_attempt']}`\n")
               fh.write(f"- artifact: `{art['id']}` expires `{art.get('expires_at')}`\n")
               fh.write(f"- tag: `{tag}`, wheel version `{version}`\n")
               fh.write(f"- `SHA256SUMS` sha256: `{sums_sha256}`\n\n```\n")
@@ -121,23 +143,13 @@ jobs:
               fh.write("```\n")
           PY
 
-      - name: Persist the verified distribution files
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: release-verified
-          path: |
-            ${{ runner.temp }}/release-dist/*.whl
-            ${{ runner.temp }}/release-dist/*.tar.gz
-            ${{ runner.temp }}/release-dist/SHA256SUMS
-          retention-days: 90
-          if-no-files-found: error
-
   publish:
     needs: validate
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
       id-token: write # trusted publishing; this is the only job with it
+      actions: read # re-read the original run and artifact
       contents: read
     steps:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -145,19 +157,63 @@ jobs:
           python-version: '3.12'
           freethreaded: false
 
-      - name: Download the verified artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: release-verified
-          path: ${{ runner.temp }}/release-dist
+      - name: Recheck the original run and artifact, then download by ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EXPECT_RUN_ID: ${{ needs.validate.outputs.run_id }}
+          EXPECT_ATTEMPT: ${{ needs.validate.outputs.run_attempt }}
+          EXPECT_ARTIFACT_ID: ${{ needs.validate.outputs.artifact_id }}
+          EXPECT_EXPIRES_AT: ${{ needs.validate.outputs.expires_at }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, subprocess, sys
 
-      - name: Re-verify the exact bytes
+          repo = os.environ["REPO"]
+          tmp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          dist = tmp / "release-dist"
+          want_run = os.environ["EXPECT_RUN_ID"]
+          want_attempt = os.environ["EXPECT_ATTEMPT"]
+          want_artifact = os.environ["EXPECT_ARTIFACT_ID"]
+
+          def api(*args):
+              return json.loads(subprocess.run(
+                  ["gh", "api", *args], check=True, capture_output=True, text=True).stdout)
+
+          run = api(f"repos/{repo}/actions/runs/{want_run}")
+          if str(run["id"]) != want_run:
+              sys.exit(f"run id changed: {run['id']}")
+          if str(run["run_attempt"]) != want_attempt:
+              sys.exit(f"run attempt changed: {run['run_attempt']} != {want_attempt}")
+          if run["conclusion"] != "success" or run["status"] != "completed":
+              sys.exit(f"run {want_run} is {run['status']}/{run['conclusion']}")
+
+          art = api(f"repos/{repo}/actions/artifacts/{want_artifact}")
+          if art.get("expired"):
+              sys.exit(f"artifact {want_artifact} expired")
+          if str(art["workflow_run"]["id"]) != want_run:
+              sys.exit(f"artifact {want_artifact} belongs to run {art['workflow_run']['id']}")
+          if art["name"] != "release-dist":
+              sys.exit(f"artifact {want_artifact} is named {art['name']}")
+          if art.get("expires_at", "") != os.environ["EXPECT_EXPIRES_AT"]:
+              sys.exit(f"artifact expiry changed: {art.get('expires_at')}")
+
+          dist.mkdir(parents=True, exist_ok=True)
+          with open(tmp / "dist.zip", "wb") as fh:
+              subprocess.run(["gh", "api",
+                              f"repos/{repo}/actions/artifacts/{want_artifact}/zip"],
+                             check=True, stdout=fh)
+          subprocess.run(["unzip", "-q", "-o", str(tmp / "dist.zip"), "-d", str(dist)],
+                         check=True)
+          print("downloaded artifact", want_artifact, "from run", want_run,
+                "attempt", want_attempt)
+          PY
+
+      - name: Verify hashes and inventory before uploading
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/release-dist"
-          echo "artifact ${{ needs.validate.outputs.artifact_id }} \
-          from run ${{ needs.validate.outputs.run_id }} \
-          attempt ${{ needs.validate.outputs.run_attempt }}"
           sha256sum --check --strict SHA256SUMS
           actual=$(sha256sum SHA256SUMS | cut -d' ' -f1)
           expected='${{ needs.validate.outputs.sums_sha256 }}'
@@ -165,38 +221,26 @@ jobs:
             echo "SHA256SUMS changed between validate and publish" >&2
             exit 1
           fi
-          python - <<'PY'
-          import glob, os, zipfile
-          wheels = glob.glob("*.whl")
-          assert len(wheels) == 1, wheels
-          with zipfile.ZipFile(wheels[0]) as zf:
-              meta = [n for n in zf.namelist() if n.endswith(".dist-info/METADATA")][0]
-              version = next(line.split(":", 1)[1].strip()
-                             for line in zf.read(meta).decode().splitlines()
-                             if line.startswith("Version:"))
-          expected = os.environ["GITHUB_REF_NAME"]
-          assert "v" + version == expected, (version, expected)
-          print("version", version)
-          PY
+          version='${{ needs.validate.outputs.version }}'
+          test "v$version" = "$GITHUB_REF_NAME"
           ls -l
+
       - name: Stage only the wheel and sdist
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/upload"
-          cp "$RUNNER_TEMP"/release-dist/*.whl "$RUNNER_TEMP"/release-dist/*.tar.gz "$RUNNER_TEMP/upload/"
+          cp "$RUNNER_TEMP/release-dist"/*.whl \
+             "$RUNNER_TEMP/release-dist"/*.tar.gz \
+             "$RUNNER_TEMP/upload/"
+          count=$(find "$RUNNER_TEMP/upload" -maxdepth 1 -type f | wc -l)
+          if [ "$count" != "2" ]; then
+            echo "expected exactly 2 staged files, found $count" >&2
+            ls -l "$RUNNER_TEMP/upload" >&2
+            exit 1
+          fi
           ls -l "$RUNNER_TEMP/upload"
 
       - name: Upload
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
         with:
           packages-dir: ${{ runner.temp }}/upload
-
-      - name: Confirm exactly two distributions were staged
-        run: |
-          set -euo pipefail
-          count=$(find "$RUNNER_TEMP/upload" -maxdepth 1 \
-                    \( -name '*.whl' -o -name '*.tar.gz' \) -type f | wc -l)
-          if [ "$count" != "2" ]; then
-            echo "expected exactly 2 distributions, found $count" >&2
-            exit 1
-          fi

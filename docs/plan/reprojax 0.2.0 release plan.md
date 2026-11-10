@@ -214,7 +214,9 @@ CPU-only hosted matrix; every action pinned by SHA.
       1. PyPI **pending publisher**: owner `leejjoon`, repository `reprojax`,
          workflow `publish.yml`, environment `pypi`.
       2. **`pypi` environment**: reviewer `leejjoon`, self-review allowed,
-         admin bypass **off**, deployment restricted to `v*` tags.
+         admin bypass **off**, and the `v*` tag deployment policy configured
+         **before any tag is pushed** — a tag pushed first would either be
+         blocked by a missing policy or, worse, deploy without one.
       3. **`v*` tag ruleset** with exactly the `update` and `deletion` rules.
       4. **`main` ruleset** with exactly `deletion` and `non_fast_forward` —
          **no `update` rule** (we push directly to `main`) and **no required
@@ -257,6 +259,10 @@ CPU-only hosted matrix; every action pinned by SHA.
       the README quick start from a fresh install of the wheel and of the
       sdist. Record run ID, attempt, artifact ID and expiry, plus interpreter,
       JAX/plugin versions and device.
+      Also run `twine check --strict` on the **exact downloaded** wheel and
+      sdist (not on a local rebuild), so a malformed `METADATA` or a
+      `README` that Twine cannot render fails before the tag rather than at
+      the upload.
 - [ ] **G5 — tag S itself.** `git tag v0.2.0 S` and push the tag. Do not
       re-run or re-dispatch CI on S between G4 and this step (see the rules
       below: `validate` requires exactly one successful run, one artifact).

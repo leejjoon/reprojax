@@ -44,9 +44,11 @@ ROOT = Path(__file__).resolve().parent.parent
 #: otherwise they are testing something other than what this suite tests.
 PARENT_REPROJAX = Path(reprojax.__file__).resolve()
 
-#: Loosest published f32 coordinate cap (forward, real SPHEREx pair). The
-#: synthetic pair here is far smaller, so this is a ceiling, not a target.
-F32_COORD_CAP_PX = 6e-4
+#: Loosest published f32 cap, applied **per coordinate** (forward, real
+#: SPHEREx pair: 6e-4 px forward / 5e-4 px reverse, read as a bound on each
+#: of x and y separately, not on their Euclidean norm). The synthetic pair
+#: here is far smaller, so this is a ceiling, not a target.
+F32_PER_COORD_CAP_PX = 6e-4
 
 # A tiny synthetic pair: 64x64 TAN in, 40x40 TAN out, slightly offset.
 # No tests/data dependency -- this must run from an installed wheel too.
@@ -289,17 +291,25 @@ def test_f32_coordinates_stay_inside_the_published_cap():
 
         both = np.isfinite(x32) & np.isfinite(x64) & np.isfinite(y32) & np.isfinite(y64)
         assert both.sum() > 0.5 * both.size, f"only {both.sum()} comparable pixels"
-        err = np.maximum(np.abs(x32 - x64), np.abs(y32 - y64))[both]
-        print("MEASURED_MAX_PX", float(err.max()))
-        print("MEASURED_RMS_PX", float(np.sqrt(np.mean(err ** 2))))
+        # The published caps bound each coordinate separately, so compare
+        # the worst single-axis error. The Euclidean distance is reported
+        # too (it can exceed either axis by up to sqrt(2)) but is not what
+        # the cap is stated against.
+        dx = np.abs(x32 - x64)[both]
+        dy = np.abs(y32 - y64)[both]
+        per_coord = np.maximum(dx, dy)
+        euclid = np.hypot(dx, dy)
+        print("MEASURED_PER_COORD_MAX_PX", float(per_coord.max()))
+        print("MEASURED_PER_COORD_RMS_PX", float(np.sqrt(np.mean(per_coord ** 2))))
+        print("MEASURED_EUCLID_MAX_PX", float(euclid.max()))
         print("COMPARED_PX", int(both.sum()))
         """,
         x64=True,
     )
-    measured = float(proc.stdout.split("MEASURED_MAX_PX")[1].split()[0])
+    measured = float(proc.stdout.split("MEASURED_PER_COORD_MAX_PX")[1].split()[0])
     compared = int(proc.stdout.split("COMPARED_PX")[1].split()[0])
     assert compared > 0
-    assert measured <= F32_COORD_CAP_PX, (
-        f"f32 coordinate error {measured:.2e} px exceeds the published cap "
-        f"{F32_COORD_CAP_PX:.0e} px over {compared} pixels"
+    assert measured <= F32_PER_COORD_CAP_PX, (
+        f"f32 per-coordinate error {measured:.2e} px exceeds the published "
+        f"cap {F32_PER_COORD_CAP_PX:.0e} px over {compared} pixels"
     )

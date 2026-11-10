@@ -17,6 +17,17 @@ from .transform import build_transform, compose_transform
 
 SUPPORTED_ORDERS = (0, 1)
 
+
+def _output_grid_dtype(matrix_precision):
+    """The dtype for the output pixel grid built by the wrappers.
+
+    The grid must match the transform's coordinate dtype, not a fixed
+    float64: under ``matrix_precision="f32"`` every per-pixel call runs in
+    float32, so a float64 grid only costs accuracy and, with
+    ``jax_enable_x64`` off, emits a truncation warning on every call.
+    """
+    return jnp.float32 if matrix_precision == "f32" else jnp.float64
+
 # Below this coverage, at least one interpolation neighbor was outside the
 # input array and contributed through `cval`. The threshold sits far below
 # any real partial-coverage value (>= 1/(order+2)) and far above float32
@@ -98,8 +109,9 @@ def reproject_interp_core(data, x_out, y_out, transform, order=1):
     else:
         # For generic providers, retain the existing coverage interpolation:
         # its value is the fraction of interpolation weight that landed on
-        # in-bounds neighbors.
-        coverage_input = jnp.ones((ny, nx), dtype=jnp.float64)
+        # in-bounds neighbors. A float32 fraction is exact enough for the
+        # threshold below, and matches the float32 path under x64-off.
+        coverage_input = jnp.ones((ny, nx), dtype=jnp.float32)
         coverage = map_coordinates(
             coverage_input, coords, order=order, mode="constant", cval=0.0
         )
@@ -256,8 +268,9 @@ def reproject_interp(input_data, output_projection, shape_out=None, order=1, mat
             )
     ny, nx = shape_out
 
+    grid_dtype = _output_grid_dtype(matrix_precision)
     y_out, x_out = jnp.meshgrid(
-        jnp.arange(ny, dtype=jnp.float64), jnp.arange(nx, dtype=jnp.float64), indexing="ij"
+        jnp.arange(ny, dtype=grid_dtype), jnp.arange(nx, dtype=grid_dtype), indexing="ij"
     )
 
     transform = build_transform(wcs_in, wcs_out, matrix_precision=matrix_precision)

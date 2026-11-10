@@ -83,7 +83,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from .interp import _as_wcs, _shape_from_header, _to_native_byte_order
+from .interp import _as_wcs, _output_grid_dtype, _shape_from_header, _to_native_byte_order
 from .transform import build_transform
 
 SUPPORTED_KERNELS = ("gaussian", "hann")
@@ -184,8 +184,8 @@ def reproject_adaptive_core(
         win_v_idx, win_u_idx = jnp.meshgrid(jnp.arange(win_size), jnp.arange(win_size), indexing="ij")
         global_v = v0_int - radius + win_v_idx
         global_u = u0_int - radius + win_u_idx
-        global_v_f = global_v.astype(jnp.float64)
-        global_u_f = global_u.astype(jnp.float64)
+        global_v_f = global_v.astype(v0.dtype)
+        global_u_f = global_u.astype(u0.dtype)
 
         in_dynamic_window = (global_v_f >= bottom) & (global_v_f <= top) & (global_u_f >= left) & (global_u_f <= right)
 
@@ -298,8 +298,9 @@ def reproject_adaptive(
             )
     ny, nx = shape_out
 
+    grid_dtype = _output_grid_dtype(matrix_precision)
     y_out, x_out = jnp.meshgrid(
-        jnp.arange(ny, dtype=jnp.float64), jnp.arange(nx, dtype=jnp.float64), indexing="ij"
+        jnp.arange(ny, dtype=grid_dtype), jnp.arange(nx, dtype=grid_dtype), indexing="ij"
     )
 
     transform = build_transform(wcs_in, wcs_out, matrix_precision=matrix_precision)

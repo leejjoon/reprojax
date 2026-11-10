@@ -210,7 +210,9 @@ CPU-only hosted matrix; every action pinned by SHA.
 ### Setup gate — before tagging
 
 - [ ] **G3 — release settings.** Perform all four, then record read-only API
-      evidence of each:
+      evidence of each. **2026-11-10: items 1-4 done except the PyPI pending
+      publisher, which still needs an interactive login — see the evidence
+      block below. G3 remains open until that exists.**
       1. PyPI **pending publisher**: owner `leejjoon`, repository `reprojax`,
          workflow `publish.yml`, environment `pypi`.
       2. **`pypi` environment**: reviewer `leejjoon`, self-review allowed,
@@ -250,6 +252,33 @@ CPU-only hosted matrix; every action pinned by SHA.
       publisher has no public read API — record it from the publisher page and
       re-verify the exact owner/repo/workflow/environment tuple immediately
       before G5, because it is only enforced at upload time.
+
+      **G3 evidence — 2026-11-10.** Items 2-4 configured; item 1 outstanding.
+      - `environments/pypi`: created 2026-11-10T11:02:29Z.
+        `can_admins_bypass: false`; one `required_reviewers` rule with
+        reviewer `leejjoon`, `prevent_self_review: false`; one `branch_policy`
+        rule backed by `deployment_branch_policies` = exactly
+        `[{"name": "v*", "type": "tag"}]` (`total_count: 1`), with
+        `protected_branches: false`. The first PUT returned
+        `can_admins_bypass: true`, so it was re-put with the field explicit.
+      - ruleset `26935196` "main": `target: branch`, `enforcement: active`,
+        `ref_name.include: ["~DEFAULT_BRANCH"]`, `bypass_actors: []`, rules
+        exactly `["deletion", "non_fast_forward"]`. No `update`, no
+        `required_status_checks`.
+      - ruleset `26935201` "tags v*": `target: tag`, `enforcement: active`,
+        `ref_name.include: ["refs/tags/v*"]`, `bypass_actors: []`, rules
+        exactly `["update", "deletion"]`.
+      - `branches/main`: `protected: true`, `required_status_checks`
+        `{checks: [], contexts: [], enforcement_level: "off"}`.
+      - name still unclaimed: `simple/reprojax/` and `pypi/reprojax/json`
+        both 404 as of this record.
+      - **OUTSTANDING: the PyPI pending publisher (item 1) is not yet
+        created.** The PyPI web UI needs an interactive login and this host
+        holds no PyPI credentials (no `~/.pypirc`, no `PYPI_TOKEN`). Until it
+        exists, `publish.yml` will fail at upload with `invalid-publisher`.
+        Create it at <https://pypi.org/manage/account/publishing/> with owner
+        `leejjoon`, repository `reprojax`, workflow `publish.yml`, environment
+        `pypi`, then re-verify before G5. G3 is **not** complete.
 
 ### Gate, tag, publish
 

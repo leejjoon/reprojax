@@ -499,8 +499,8 @@ The project now exists under the operator's account; the name is held by the
 project, not by a publisher.
 
 **State now.** A normal Trusted Publisher exists on the project (`leejjoon` /
-`reprojax` / `publish.yml` / `pypi`). The token was revoked and the
-`PYPI_API_TOKEN` secret is retired; `publish.yml` is back to OIDC with
+`reprojax` / `publish.yml` / `pypi`). The operator revoked the token and the
+agent deleted the `PYPI_API_TOKEN` secret (accepted); `publish.yml` is back to OIDC with
 `id-token: write` on the `publish` job only. The `pypi` environment (reviewer
 `leejjoon`, self-review allowed, admin bypass off, one `v*` tag policy) and
 both rulesets are unchanged, and remain the protection. Future releases
@@ -509,22 +509,31 @@ publish with attestations; 0.2.0 is the only release without them.
 | Event | When |
 | --- | --- |
 | Trusted publisher created on the `reprojax` project | 2026-11-11 (operator) |
-| API token revoked, `PYPI_API_TOKEN` secret removed | 2026-11-11 (operator) |
+| API token revoked | 2026-11-11 (operator) |
+| `PYPI_API_TOKEN` environment secret deleted | 2026-11-11 (agent, accepted) |
 | Reverting commit `a7071947db8a6c7b47c9a794b851aaa150e9d0ff` | 2026-11-11 |
 
 **Trusted publisher — 2026-11-11.** The operator created a normal Trusted
 Publisher on the existing `reprojax` project (owner `leejjoon`, repository
-`reprojax`, workflow `publish.yml`, environment `pypi`), states the 0.2.0 API
-token is revoked or will be, and reports the security history shows only the
-token's creation and the two 0.2.0 uploads. The `PYPI_API_TOKEN` secret is
-deleted (the agent found it still present and removed it; accepted). None of
-that is verifiable read-only: PyPI's security history redirects to login, a
-revoked token is proven only by a failed upload, and a Trusted Publisher has
-no read API.
+`reprojax`, workflow `publish.yml`, environment `pypi`). The operator revoked
+the 0.2.0 API token on 2026-11-11 and reports the security history shows only
+the token's creation and the two 0.2.0 uploads. The `PYPI_API_TOKEN`
+environment secret was deleted by the agent on the same day, after finding it
+still present; accepted. Revocation and secret deletion are separate acts by
+different parties, recorded on separate rows.
+
+None of the PyPI-side facts is verifiable read-only: the security history
+redirects to login, a revoked token is proven only by a failed upload, and a
+Trusted Publisher has no read API. The secret deletion, by contrast, was
+observed directly.
 
 Consequence for the next release: `publish.yml` declares exactly the shape
 the publisher expects, but **the binding is untested until a tag is pushed —
 the next tag's upload is its first real test.** A mismatch fails safely as
 `invalid-publisher` at upload time, because the project already exists, so
-nothing is claimed or lost; it does mean fixing the publisher (or re-tagging)
-before retrying.
+nothing is claimed or lost.
+
+**The remedy is to fix the publisher on PyPI and re-run the failed Publish job
+on the same tag, with operator authorization — never re-tag.** The commit the
+tag targets is already gated and its artifact already verified; a re-tag would
+put different bytes behind the same version number.

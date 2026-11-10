@@ -74,13 +74,13 @@ jobs:
           uv venv "$RUNNER_TEMP/wheelenv" --python "$(command -v python)"
           uv pip install --python "$RUNNER_TEMP/wheelenv/bin/python" \
             -c ci/latest.txt "$RUNNER_TEMP"/release-dist/*.whl pytest reproject==0.21.0
-          PYTHONPATH= "$RUNNER_TEMP/wheelenv/bin/python" -m pytest -q tests
+          env -u PYTHONPATH "$RUNNER_TEMP/wheelenv/bin/python" -m pytest -q tests
       - name: Quick start from the installed sdist
         run: |
           uv venv "$RUNNER_TEMP/sdistenv" --python "$(command -v python)"
           uv pip install --python "$RUNNER_TEMP/sdistenv/bin/python" \
             -c ci/latest.txt "$RUNNER_TEMP"/release-dist/*.tar.gz
-          PYTHONPATH= "$RUNNER_TEMP/sdistenv/bin/python" scripts/check_quickstart.py
+          env -u PYTHONPATH "$RUNNER_TEMP/sdistenv/bin/python" scripts/check_quickstart.py
       - name: Write SHA256SUMS
         run: |
           cd "$RUNNER_TEMP/release-dist"

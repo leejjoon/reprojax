@@ -194,7 +194,8 @@ jobs:
       - name: Confirm exactly two distributions were staged
         run: |
           set -euo pipefail
-          count=$(ls -1 "$RUNNER_TEMP"/upload/*.whl "$RUNNER_TEMP"/upload/*.tar.gz | wc -l)
+          count=$(find "$RUNNER_TEMP/upload" -maxdepth 1 \
+                    \( -name '*.whl' -o -name '*.tar.gz' \) -type f | wc -l)
           if [ "$count" != "2" ]; then
             echo "expected exactly 2 distributions, found $count" >&2
             exit 1

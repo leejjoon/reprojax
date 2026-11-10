@@ -148,7 +148,8 @@ jobs:
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
-      id-token: write # trusted publishing; this is the only job with it
+      # An API-token upload needs no OIDC token, so this job no longer needs
+      # id-token: write. It is the only job that can reach the environment.
       actions: read # re-read the original run and artifact
       contents: read
     steps:
@@ -240,7 +241,26 @@ jobs:
           fi
           ls -l "$RUNNER_TEMP/upload"
 
+      - name: Check the token is present
+        env:
+          TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "PYPI_API_TOKEN is not set in the pypi environment" >&2
+            exit 1
+          fi
+          case "$TOKEN" in
+            pypi-*) ;;
+            *) echo "PYPI_API_TOKEN does not look like a PyPI token" >&2; exit 1;;
+          esac
+          echo "token present, ${#TOKEN} chars"
+
       - name: Upload
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
         with:
           packages-dir: ${{ runner.temp }}/upload
+          # API token from the `pypi` environment, not trusted publishing.
+          # `user` must be the literal __token__, not a username.
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}

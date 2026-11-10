@@ -210,9 +210,10 @@ CPU-only hosted matrix; every action pinned by SHA.
 ### Setup gate — before tagging
 
 - [ ] **G3 — release settings.** Perform all four, then record read-only API
-      evidence of each. **2026-11-10: items 1-4 done except the PyPI pending
-      publisher, which still needs an interactive login — see the evidence
-      block below. G3 remains open until that exists.**
+      evidence of each. **2026-11-10: items 2-4 done; item 1 replaced by an
+      API-token credential (D-TOKEN) because this host has no PyPI login —
+      see the evidence block below. G3 closes when the operator has added
+      `PYPI_API_TOKEN` to the `pypi` environment.**
       1. PyPI **pending publisher**: owner `leejjoon`, repository `reprojax`,
          workflow `publish.yml`, environment `pypi`.
       2. **`pypi` environment**: reviewer `leejjoon`, self-review allowed,
@@ -272,13 +273,30 @@ CPU-only hosted matrix; every action pinned by SHA.
         `{checks: [], contexts: [], enforcement_level: "off"}`.
       - name still unclaimed: `simple/reprojax/` and `pypi/reprojax/json`
         both 404 as of this record.
-      - **OUTSTANDING: the PyPI pending publisher (item 1) is not yet
-        created.** The PyPI web UI needs an interactive login and this host
-        holds no PyPI credentials (no `~/.pypirc`, no `PYPI_TOKEN`). Until it
-        exists, `publish.yml` will fail at upload with `invalid-publisher`.
-        Create it at <https://pypi.org/manage/account/publishing/> with owner
-        `leejjoon`, repository `reprojax`, workflow `publish.yml`, environment
-        `pypi`, then re-verify before G5. G3 is **not** complete.
+      - **Item 1 resolved by credential choice D-TOKEN (2026-11-10):** the
+        PyPI UI needs an interactive login, which this host does not have, and
+        a token cannot create a pending publisher anyway (the form is
+        session/CSRF-authenticated; there is no publisher-management REST
+        API). The publisher is therefore **replaced, not configured**: the
+        `publish` job authenticates with an **account-scoped API token** held
+        as the `PYPI_API_TOKEN` secret on the `pypi` environment, and the
+        first upload creates the project.
+        Consequences, all accepted:
+        - `id-token: write` is removed from `publish` (OIDC is unused); no
+          other job has it.
+        - The environment, its reviewer/v* tag policy and both rulesets are
+          unchanged and still the protection.
+        - A token upload **creates an unregistered name** on first use, so the
+          "404 means absent, not reserved" caveat becomes acute: publish
+          promptly, and expect the first successful upload to be the moment
+          the name is claimed.
+        - Setup left to the operator: create an **account-scoped** token and
+          add it as `PYPI_API_TOKEN` on the `pypi` environment (not a
+          repository secret, so it is only readable inside the protected
+          job). A missing or malformed token now fails fast with a clear
+          message rather than an opaque upload error.
+        - If a pending publisher is later wanted as well, it is harmless:
+          normal and pending publishers coexist.
 
 ### Gate, tag, publish
 
@@ -313,8 +331,9 @@ CPU-only hosted matrix; every action pinned by SHA.
         outputs. There is **no intermediate artifact copy**: `validate` writes
         nothing back to Actions storage.
       - **`publish`** (`environment: pypi`, `needs: validate`, permissions
-        `id-token: write`, `actions: read`, `contents: read`): the only job
-        with `id-token: write`. **After** environment approval it re-reads the
+        `actions: read`, `contents: read`; authenticates as `__token__` with
+        the `PYPI_API_TOKEN` environment secret, per D-TOKEN). **After**
+        environment approval it re-reads the
         original run and artifact by ID, confirms the run is still
         completed/success on the same attempt and the artifact is unexpired
         with an unchanged expiry, downloads **that** artifact by ID — never by

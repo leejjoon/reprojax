@@ -1,12 +1,9 @@
 # Changelog
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-11-10
 
-The date is set at publication, in the same post-publication commit that adds
-`docs/release/0.2.0.md`. `CHANGELOG.md` is not part of the sdist — the sdist
-carries `README.md`, `LICENSE`, `pyproject.toml` and `src/` — so dating it
-after the tag changes no published byte, the tag, or the recorded artifact
-hashes.
+Published to PyPI on 2026-11-10. See `docs/release/0.2.0.md` for the tested
+environments, the artifact hashes and the post-publication verification.
 
 First public release.
 

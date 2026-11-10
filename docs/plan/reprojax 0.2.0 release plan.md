@@ -209,7 +209,7 @@ CPU-only hosted matrix; every action pinned by SHA.
 
 ### Setup gate — before tagging
 
-- [ ] **G3 — release settings.** Perform all four, then record read-only API
+- [x] **G3 — release settings.** Perform all four, then record read-only API
       evidence of each. **2026-11-10: G3 COMPLETE.** Items 2-4 configured and
       verified; item 1 replaced by the API-token credential (D-TOKEN) because
       this host has no PyPI login, and `PYPI_API_TOKEN` is now present on the
@@ -300,7 +300,7 @@ CPU-only hosted matrix; every action pinned by SHA.
 
 ### Gate, tag, publish
 
-- [ ] **G4 — pre-tag local gate.** From the `release-dist` artifact of the
+- [x] **G4 — pre-tag local gate.** From the `release-dist` artifact of the
       **single successful `ci.yml` run on `main` for S** — the exact bytes,
       no rebuild: full suite on CPU (minimum + latest stacks) and on ROCm, plus
       the README quick start from a fresh install of the wheel and of the
@@ -310,7 +310,36 @@ CPU-only hosted matrix; every action pinned by SHA.
       sdist (not on a local rebuild), so a malformed `METADATA` or a
       `README` that Twine cannot render fails before the tag rather than at
       the upload.
-- [ ] **G5 — tag S itself.** `git tag v0.2.0 S` and push the tag. Do not
+
+      **G4 result — 2026-11-10, PASS.** S =
+      `3eefd2d98def258869cb17d704e6b8a8890ddda3`; run `42817898829`
+      attempt 1 (`cpu (3.11.15)`, `cpu (3.14.4)`, `packaging` all success);
+      artifact `13765712294` `release-dist`, 44,822 B, expiry
+      `2027-02-08T12:41:27Z`, `expired: false`. Inventory exact (one wheel,
+      one sdist, no extra files); `SHA256SUMS` sha256
+      `69d82f4ea124b620543069d518bebaad90ec939a997c385d6348ee18e709e9cb`.
+
+      | File | Bytes | SHA-256 |
+      |---|---:|---|
+      | `reprojax-0.2.0-py3-none-any.whl` | 22,535 | `e0fb9a88aa584361813c91bfcb833f603c0a4a8279a19dc04b0304327c54fc6c` |
+      | `reprojax-0.2.0.tar.gz` | 22,755 | `531e0bce0952fa05b1e68d249ec88225e92b29969ded45c8183ddc966c0fa719` |
+
+      Gate, all from the installed wheel with the source tree off
+      `sys.path`:
+      - CPU minimum (Py 3.11.15, jax 0.10.2, numpy 2.4.6, astropy 7.2.0,
+        mapprojax 0.3.0, reproject 0.21.0): **105 passed, 2 skipped**.
+      - CPU latest (Py 3.14.4 standard, jax/jaxlib 0.12.0.1, numpy 2.5.4,
+        astropy 8.0.2): **105 passed, 2 skipped**; precision tests also
+        **4 passed** under `-W error::UserWarning`.
+      - ROCm (Py 3.12.13, jax/jaxlib 0.11.1 + rocm7 plugins 0.11.1, numpy
+        2.5.1, astropy 8.0.2, `RocmDevice(id=0)`): **107 passed, 0 skipped**.
+        Benchmark: 0.0262 s batched/jitted vs 4.4823 s looped CPU (170.9×).
+      - `twine check --strict` on the exact downloaded files: both PASSED.
+      - Quick start from a fresh **wheel** install: `quick start OK:
+        (40, 40), 1120 finite pixels`; dependencies resolve to `reprojax` +
+        `mapprojax` only, no `reproject`.
+      - Quick start from a fresh **sdist** install: same result.
+- [x] **G5 — tag S itself.** `git tag v0.2.0 S` and push the tag. Do not
       re-run or re-dispatch CI on S between G4 and this step (see the rules
       below: `validate` requires exactly one successful run, one artifact).
       No commit is
@@ -340,14 +369,14 @@ CPU-only hosted matrix; every action pinned by SHA.
         name — re-verifies `SHA256SUMS` and the staged inventory, then uploads
         **only** the wheel and the sdist. It never rebuilds and never
         re-selects an artifact.
-- [ ] **G6 — approve the protected `publish` job.** Before approving, compare
+- [x] **G6 — approve the protected `publish` job.** Before approving, compare
       `validate`'s printed run ID, attempt, artifact ID, expiry and hashes with
       the G4 record; any difference stops the release and returns to G4.
-- [ ] **G7 — post-publication verification.** PyPI hashes match
+- [x] **G7 — post-publication verification.** PyPI hashes match
       `SHA256SUMS`; a fresh `pip install reprojax==0.2.0` in a clean venv
       resolves `mapprojax==0.3.0`; runtime dependencies only, no `reproject`;
       and runs the README quick start.
-- [ ] **G8 — the release record, written once.** In a single commit **after**
+- [x] **G8 — the release record, written once.** In a single commit **after**
       G7, add `docs/release/0.2.0.md` (S, tag, artifact IDs and hashes, the G4
       matrix, the ROCm result, the PyPI verification) **and** set the
       `CHANGELOG.md` date. Append-only from then on. Both are outside the
@@ -382,6 +411,20 @@ Astropy 8.0.2 / ROCm plugins 0.11.1 on this Strix Halo host; that set is
 reproducible here and is the ROCm gate environment. The CPU gate uses the
 `ci/minimum.txt` and `ci/latest.txt` stacks, so the two gates differ in
 interpreter on purpose.
+
+## Released — 2026-11-10
+
+reprojax 0.2.0 is on PyPI. Tag `v0.2.0` targets `3eefd2d`; the artifact it
+published is `13765712294` from CI run `42817898829`; publish run
+`42819314466` succeeded after `pypi` approval. Both PyPI files match the
+pre-tag G4 hashes exactly, and a fresh `pip install reprojax==0.2.0` resolves
+`mapprojax==0.3.0` from the public index. Full record:
+`docs/release/0.2.0.md`.
+
+Remaining after this release: an optional GitHub Release for `v0.2.0`; the
+Actions pins still declare Node 20 (they pass under the runner's forced
+migration); and G3's PyPI step used an API token rather than a pending
+publisher, so nothing reserves a future name before first upload.
 
 ## Gate pairing
 

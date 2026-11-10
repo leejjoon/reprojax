@@ -210,10 +210,10 @@ CPU-only hosted matrix; every action pinned by SHA.
 ### Setup gate — before tagging
 
 - [ ] **G3 — release settings.** Perform all four, then record read-only API
-      evidence of each. **2026-11-10: items 2-4 done; item 1 replaced by an
-      API-token credential (D-TOKEN) because this host has no PyPI login —
-      see the evidence block below. G3 closes when the operator has added
-      `PYPI_API_TOKEN` to the `pypi` environment.**
+      evidence of each. **2026-11-10: G3 COMPLETE.** Items 2-4 configured and
+      verified; item 1 replaced by the API-token credential (D-TOKEN) because
+      this host has no PyPI login, and `PYPI_API_TOKEN` is now present on the
+      `pypi` environment. See the evidence block below.
       1. PyPI **pending publisher**: owner `leejjoon`, repository `reprojax`,
          workflow `publish.yml`, environment `pypi`.
       2. **`pypi` environment**: reviewer `leejjoon`, self-review allowed,
@@ -290,11 +290,11 @@ CPU-only hosted matrix; every action pinned by SHA.
           "404 means absent, not reserved" caveat becomes acute: publish
           promptly, and expect the first successful upload to be the moment
           the name is claimed.
-        - Setup left to the operator: create an **account-scoped** token and
-          add it as `PYPI_API_TOKEN` on the `pypi` environment (not a
-          repository secret, so it is only readable inside the protected
-          job). A missing or malformed token now fails fast with a clear
-          message rather than an opaque upload error.
+        - **Done:** `PYPI_API_TOKEN` exists on the `pypi` environment
+          (`created_at` = `updated_at` = `2026-11-10T12:40:19Z`) and there is
+          **no** repository-level secret of that name, so it is only readable
+          inside the protected job. A missing or malformed token still fails
+          fast with a clear message rather than an opaque upload error.
         - If a pending publisher is later wanted as well, it is harmless:
           normal and pending publishers coexist.
 

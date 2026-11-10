@@ -152,3 +152,19 @@ when you want to run the tests.
 BSD-3-Clause. The SIP and reprojection algorithms are ported from
 [`reproject`](https://github.com/astropy/reproject); its license is carried in
 [`LICENSE`](LICENSE) alongside reprojax's own.
+
+## Test data
+
+The integration tests use a real SPHEREx exposure and a Galactic template
+header. NASA's Science Mission Directorate releases mission data into the
+public domain (SPD-41). If you publish work that uses these products, include
+the acknowledgement IRSA requests:
+
+> This publication makes use of data products from the Spectro-Photometer for
+the History of the Universe, Epoch of Reionization and Ices Explorer
+> (SPHEREx), which is a joint project of the Jet Propulsion Laboratory and the
+> California Institute of Technology, and is funded by the National
+> Aeronautics and Space Administration.
+
+Provenance, checksums and the citation DOIs are in
+[`tests/data/README.md`](tests/data/README.md).

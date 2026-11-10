@@ -70,11 +70,35 @@ ICRS TAN+SIP → Galactic TAN operation that workflow performed by hand.
 
 ## Terms
 
-Both files are redistributed here for testing only, as part of the SPHEREx
-public data release. SPHEREx is a NASA Medium Explorer mission; its data are
-public and not subject to copyright in the United States. The files carry
-their original FITS headers, including the pipeline `HISTORY` trail
-(`SSDC-MS-*` calibration steps).
+SPHEREx is a NASA Astrophysics Medium Explorer mission, a joint project of
+the Jet Propulsion Laboratory and the California Institute of Technology,
+funded by NASA.
+
+**Data rights.** NASA's Science Mission Directorate policy, SPD-41, states
+that "Mission data are released into the public domain and non-SMD-funded
+activities have no requirements with respect to the usage of that data", and
+that "there shall be no period of exclusive access to Mission data". These two
+files are therefore redistributed here as public-domain mission data.
+
+**Required acknowledgement** (from the IRSA SPHEREx Quick Release page), to be
+included in published material that uses these products:
+
+> This publication makes use of data products from the Spectro-Photometer for
+the History of the Universe, Epoch of Reionization and Ices Explorer
+> (SPHEREx), which is a joint project of the Jet Propulsion Laboratory and the
+> California Institute of Technology, and is funded by the National
+> Aeronautics and Space Administration.
+
+**Citation.** IRSA asks users of SPHEREx Quick Release data to cite the
+matching DOI. The exposure here was acquired 2025-06-02 (before QR2 superseded
+QR1 in October 2025) and the file name records L2b processing version 2.0, so
+it is either an original QR1 product or a QR2 reprocessing of the same
+exposure. Confirm from your source before citing one; the candidates are
+`10.26131/IRSA629` (QR1) and `10.26131/IRSA652` (QR2).
+
+**Header provenance.** The files carry their original FITS headers
+unchanged, including the pipeline `HISTORY` trail of `SSDC-MS-*` calibration
+steps (`SSDC-MS-012` through `SSDC-MS-025`).
 
 If you redistribute reprojax, keep these files' provenance with them. If the
 upstream terms change, this file is the place to record the new ones.

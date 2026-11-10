@@ -163,9 +163,11 @@ BSD-3-Clause. The SIP and reprojection algorithms are ported from
 ## Test data
 
 The integration tests use a real SPHEREx exposure and a Galactic template
-header. NASA's Science Mission Directorate releases mission data into the
-public domain (SPD-41). If you publish work that uses these products, include
-the acknowledgement IRSA requests:
+header. Only the exposure is mission data: NASA's Science Mission
+Directorate releases mission data into the public domain (SPD-41), while the
+template header is project metadata under reprojax's own licence. If you
+publish work that uses the exposure, include the acknowledgement IRSA
+requests:
 
 > This publication makes use of data products from the Spectro-Photometer for
 the History of the Universe, Epoch of Reionization and Ices Explorer

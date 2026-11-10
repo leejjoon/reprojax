@@ -85,9 +85,12 @@ verified by card-for-card comparison.
 
 What the header does **not** tell you: it carries no `OBSID`, no `DATE-OBS`,
 no `ORIGIN`/`AUTHOR`, and no pipeline `HISTORY` trail, so the file itself
-names neither its producer nor its licence. Treat it as project test
-metadata under the same BSD-3-Clause terms as reprojax, and confirm with the
-repository owner if you redistribute it separately.
+names neither its producer nor its licence.
+
+**Terms.** It is project metadata from the author's own workflow, so it is
+**not** SPHEREx mission data and SPD-41 does not apply to it. It is
+distributed under reprojax's own BSD-3-Clause licence, confirmed by the
+repository owner.
 
 Because it is only WCS parameters — `CTYPE`, `CRVAL`, `CRPIX`, `CDELT` for
 a Galactic TAN grid — it is trivially reproducible if the file is ever
@@ -99,14 +102,20 @@ SPHEREx is a NASA Astrophysics Medium Explorer mission, a joint project of
 the Jet Propulsion Laboratory and the California Institute of Technology,
 funded by NASA.
 
-**Data rights.** NASA's Science Mission Directorate policy, SPD-41, states
-that "Mission data are released into the public domain and non-SMD-funded
-activities have no requirements with respect to the usage of that data", and
-that "there shall be no period of exclusive access to Mission data". These two
-files are therefore redistributed here as public-domain mission data.
+**Scope.** Only `spherex_l2b_v20.fits` is a SPHEREx mission product.
+`galactic_template_header.fits` is project metadata from the author's own
+workflow, not mission data; its provenance and terms are stated separately
+above.
+
+**Data rights (the exposure only).** NASA's Science Mission Directorate
+policy, SPD-41, states that "Mission data are released into the public domain
+and non-SMD-funded activities have no requirements with respect to the usage
+of that data", and that "there shall be no period of exclusive access to
+Mission data". `spherex_l2b_v20.fits` is therefore redistributed here as
+public-domain mission data.
 
 **Required acknowledgement** (from the IRSA SPHEREx Quick Release page), to be
-included in published material that uses these products:
+included in published material that uses the exposure:
 
 > This publication makes use of data products from the Spectro-Photometer for
 the History of the Universe, Epoch of Reionization and Ices Explorer
@@ -121,9 +130,10 @@ it is either an original QR1 product or a QR2 reprocessing of the same
 exposure. Confirm from your source before citing one; the candidates are
 `10.26131/IRSA629` (QR1) and `10.26131/IRSA652` (QR2).
 
-**Header provenance.** The files carry their original FITS headers
-unchanged, including the pipeline `HISTORY` trail of `SSDC-MS-*` calibration
-steps (`SSDC-MS-012` through `SSDC-MS-025`).
+**Header provenance (the exposure only).** `spherex_l2b_v20.fits` carries
+its original FITS header unchanged, including the pipeline `HISTORY` trail of
+`SSDC-MS-*` calibration steps (`SSDC-MS-012` through `SSDC-MS-025`). The
+template header has no such trail — see its provenance section above.
 
 If you redistribute reprojax, keep these files' provenance with them. If the
 upstream terms change, this file is the place to record the new ones.

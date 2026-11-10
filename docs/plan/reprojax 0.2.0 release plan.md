@@ -511,3 +511,20 @@ publish with attestations; 0.2.0 is the only release without them.
 | Trusted publisher created on the `reprojax` project | 2026-11-11 (operator) |
 | API token revoked, `PYPI_API_TOKEN` secret removed | 2026-11-11 (operator) |
 | Reverting commit `a7071947db8a6c7b47c9a794b851aaa150e9d0ff` | 2026-11-11 |
+
+**Trusted publisher — 2026-11-11.** The operator created a normal Trusted
+Publisher on the existing `reprojax` project (owner `leejjoon`, repository
+`reprojax`, workflow `publish.yml`, environment `pypi`), states the 0.2.0 API
+token is revoked or will be, and reports the security history shows only the
+token's creation and the two 0.2.0 uploads. The `PYPI_API_TOKEN` secret is
+deleted (the agent found it still present and removed it; accepted). None of
+that is verifiable read-only: PyPI's security history redirects to login, a
+revoked token is proven only by a failed upload, and a Trusted Publisher has
+no read API.
+
+Consequence for the next release: `publish.yml` declares exactly the shape
+the publisher expects, but **the binding is untested until a tag is pushed —
+the next tag's upload is its first real test.** A mismatch fails safely as
+`invalid-publisher` at upload time, because the project already exists, so
+nothing is claimed or lost; it does mean fixing the publisher (or re-tagging)
+before retrying.

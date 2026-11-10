@@ -131,10 +131,11 @@ not a claim of float64 equivalence.
 
 On a Strix Halo host (ROCm device, JAX 0.11.1 + rocm7 plugins 0.11.1),
 batched and `jax.jit`-compiled reprojax reprojects 8 SPHEREx-scale
-(2040² → 1201²) exposures in 0.026 s, against 4.43 s for a looped CPU
-`reproject_interp` — 169.9×. That is a cross-backend batched-vs-looped
-figure, not a like-for-like backend comparison; the CPU skips the batched
-GPU-only tests.
+(2040² → 1201²) exposures in 0.026 s. The looped CPU `reproject_interp`
+baseline for the same work measured 4.4–7.9 s across runs on this host, i.e.
+roughly 170–300×. The reprojax figure is stable; the baseline is what varies.
+This is a cross-backend batched-vs-looped comparison, not a like-for-like
+backend comparison, and the CPU skips the batched GPU-only tests.
 
 ## Development
 

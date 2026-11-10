@@ -173,9 +173,12 @@ CPU-only hosted matrix; every action pinned by SHA.
 - [ ] If the performance figure is used, name backend, JIT status and the
       comparison: batched **jitted** reprojax on **ROCm** (`RocmDevice`,
       `AMD Radeon Graphics`, JAX 0.11.1 + rocm7 plugins 0.11.1) versus
-      **looped CPU** `reproject_interp`, warm-up excluded, n=8, 2040²→1201²,
-      0.0261s vs 4.4269s (169.9×). It is a cross-backend batch-vs-loop number,
-      not a like-for-like backend comparison, and no test gates on it.
+      **looped CPU** `reproject_interp`, warm-up excluded, n=8, 2040²→1201².
+      Measured 0.0261s against a 4.43s baseline, and 0.0259s against 7.89s on
+      a later run: the reprojax figure is stable and the CPU baseline is what
+      varies, so quote a range (~170–300×), not one ratio. It is a
+      cross-backend batch-vs-loop number, not a like-for-like backend
+      comparison, and no test gates on it.
 - [ ] **Self-contained quick start** — no `tests/data`. Synthetic 64² TAN
       header → 40² output, verified running from an installed wheel
       (1,120 of 1,600 output pixels valid, peak 0.73, 0 warnings).

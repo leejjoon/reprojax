@@ -425,6 +425,8 @@ Remaining after this release: an optional GitHub Release for `v0.2.0`; the
 Actions pins still declare Node 20 (they pass under the runner's forced
 migration); and G3's PyPI step used an API token rather than a pending
 publisher, so nothing reserves a future name before first upload.
+*(superseded — see correction of 2026-11-11: a pending publisher never
+reserves a name either, so the token bought no name security.)*
 
 ## Gate pairing
 
@@ -522,10 +524,16 @@ environment secret was deleted by the agent on the same day, after finding it
 still present; accepted. Revocation and secret deletion are separate acts by
 different parties, recorded on separate rows.
 
-None of the PyPI-side facts is verifiable read-only: the security history
-redirects to login, a revoked token is proven only by a failed upload, and a
-Trusted Publisher has no read API. The secret deletion, by contrast, was
-observed directly.
+Evidence grade, corrected 2026-11-12: the publisher configuration, the token
+revocation and the security-history review are all **owner-reported**, not
+independently verified. The security history redirects to login, a Trusted
+Publisher has no read API, and the agent made **no upload probe**, so neither
+the revocation nor the binding was tested from this host. Directly observed:
+the `PYPI_API_TOKEN` environment secret's absence (`total_count` 1 → 0).
+
+Future attestations are **configured but unverified**: `publish.yml` is back
+to OIDC, but no release has used the publisher yet, so PEP 740 output is
+unproven until the next release.
 
 Consequence for the next release: `publish.yml` declares exactly the shape
 the publisher expects, but **the binding is untested until a tag is pushed —
@@ -537,3 +545,14 @@ nothing is claimed or lost.
 on the same tag, with operator authorization — never re-tag.** The commit the
 tag targets is already gated and its artifact already verified; a re-tag would
 put different bytes behind the same version number.
+
+**Scope of that remedy — added 2026-11-12.** It applies only to a future OIDC
+release that fails *authentication*, i.e. before any file uploads: fix the
+PyPI publisher and, with operator authorization, re-run the failed **publish**
+job against the **unchanged, unexpired original artifact**. Never re-run the
+producer CI and never move the tag. Three cases fall outside it and need a
+separate recovery review: a **partial upload** (mixed index state), an
+**expired artifact** (a rebuild is a new candidate), and a **workflow-code
+defect** (the fix changes `publish.yml`, itself a release input). This does
+**not** apply to re-running `v0.2.0`, whose tagged workflow is the token
+version and whose token is revoked.

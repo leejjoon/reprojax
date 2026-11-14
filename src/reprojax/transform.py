@@ -10,44 +10,75 @@ Everything astropy-facing runs once, eagerly, at build time in
 from collections import OrderedDict
 
 import jax.numpy as jnp
-from astropy.wcs.utils import wcs_to_celestial_frame
-from mapprojax.wcs import Sin, Tan
+import numpy as np
 from mapprojax.reproject import Reprojector
-from mapprojax.utils import apply_rotation
 
-from ._astropy_wcs import frame_rotation_matrix, projection_code, wcs_params_from_astropy
+from ._astropy_wcs import _rotation_from_descriptors, validated_wcs
 
-_PROVIDERS = {"TAN": Tan, "SIN": Sin}
 MATRIX_PRECISIONS = ("f64", "f32")
 
-# build_transform's cache: keyed on the numeric content of wcs_in/wcs_out
+# build_transform's cache: keyed on the validated leaves of wcs_in/wcs_out
 # (not object identity), so repeated calls with re-parsed-but-identical WCS
 # (e.g. the same header read from disk each time, or the same pointing's
 # multiple spectral channels) hit the cache too, not just calls reusing the
 # same Python WCS object. Bounded and LRU-evicted since each entry pins a
 # compiled transform closure (and jit will hold a compilation cache entry
 # keyed on its identity) in memory for as long as the cache keeps it.
+#
+# The key is built from *validated* output, after from_astropy has accepted
+# the pair: a raw-key lookup would let an unsupported input (a TPV header
+# astropy normalises to plain TAN, a unit-mismatched header) be served a
+# cached transform built from a different WCS. Validation therefore runs on
+# every call, hit or miss, and costs one conversion per WCS.
 _TRANSFORM_CACHE_MAXSIZE = 32
 _TRANSFORM_CACHE = OrderedDict()
 
 
 def _mapprojax_wcs(astropy_wcs, precision="f64"):
-    code = projection_code(astropy_wcs)
-    crpix, cd, crval, sip = wcs_params_from_astropy(astropy_wcs)
-    return _PROVIDERS[code](crpix, cd, crval, sip=sip, precision=precision)
+    """The mapprojax kernel for one WCS (no pair-level frame checks)."""
+    return validated_wcs(astropy_wcs, precision=precision).mwcs
 
 
-def _sip_fingerprint(sip):
+def _leaf_key(array):
+    """A hashable, dtype-aware key for one array leaf.
+
+    Values are copied first so the ``-0.0`` normalisation never mutates a
+    caller's array, and ``dtype.str`` is part of the key because an f32
+    ``crpix``/``cd`` beside a host-f64 ``crval`` must not collide with the
+    f64 entry for the same WCS.
+    """
+    canonical = np.where(np.asarray(array) == 0, 0.0, np.asarray(array))
+    canonical = np.ascontiguousarray(canonical)
+    return (canonical.dtype.str, canonical.shape, canonical.tobytes())
+
+
+def _sip_key(sip):
     if sip is None:
         return None
-    return tuple(None if arr is None else (arr.shape, arr.tobytes()) for arr in (sip.a, sip.b, sip.ap, sip.bp))
+    return (
+        getattr(sip, "inverse_steps", None),
+        tuple(None if leaf is None else _leaf_key(leaf) for leaf in (sip.a, sip.b, sip.ap, sip.bp)),
+    )
 
 
-def _wcs_fingerprint(astropy_wcs):
-    code = projection_code(astropy_wcs)
-    crpix, cd, crval, sip = wcs_params_from_astropy(astropy_wcs)
-    frame = repr(wcs_to_celestial_frame(astropy_wcs))
-    return (code, tuple(crpix), tuple(map(tuple, cd)), tuple(crval), _sip_fingerprint(sip), frame)
+def _validated_key(record, matrix_precision):
+    """The cache key of one validated WCS.
+
+    Everything here comes from the validated output, so an input that differs
+    only in a convention astropy hides (TPV vs TAN) can never share a key.
+    The descriptor contributes primitives only, never the live astropy frame.
+    """
+    mwcs = record.mwcs
+    descriptor = record.descriptor
+    return (
+        type(mwcs).__name__,
+        _leaf_key(mwcs.crpix),
+        _leaf_key(mwcs.cd),
+        _leaf_key(mwcs.crval),
+        _sip_key(mwcs.sip),
+        (descriptor.kind, descriptor.equinox, descriptor.axis_pair),
+        matrix_precision,
+    )
 
 
 def compose_transform(mwcs_in, mwcs_out, rotation):
@@ -186,37 +217,44 @@ def build_transform(wcs_in, wcs_out, matrix_precision="f64"):
 
     Note
     ----
-    Results are cached on the numeric content of ``wcs_in``/``wcs_out`` (CD,
-    CRPIX, CRVAL, SIP coefficients, projection code, and celestial frame)
-    — calling this again with an equivalent
-    WCS pair, even freshly reconstructed from the same header, returns the
-    *same* transform object rather than rebuilding it. Reusing that object
-    also keeps the compiled interpolation/adaptive call paths on their
-    established cache key; a changed WCS fingerprint or static configuration
-    can require retracing, especially for the autodiff-heavy adaptive core.
-    Reusing the same WCS pair across many calls (e.g. per-band exposures
-    sharing one pointing) pays the construction and compilation costs once.
+    Results are cached on the *validated* content of ``wcs_in``/``wcs_out``
+    (projection type, CD, CRPIX, CRVAL, SIP coefficients, and a frame
+    descriptor of kind, equinox and CTYPE axis pair) — calling this again
+    with an equivalent WCS pair, even freshly reconstructed from the same
+    header, returns the *same* transform object rather than rebuilding it.
+    Reusing that object also keeps the compiled interpolation/adaptive call
+    paths on their established cache key; a changed WCS key or static
+    configuration can require retracing, especially for the autodiff-heavy
+    adaptive core. Reusing the same WCS pair across many calls (e.g. per-band
+    exposures sharing one pointing) pays the construction and compilation
+    costs once.
+
+    Validation runs on every call, hit or miss, so an unsupported input can
+    never be served a cached transform: both WCSes go through
+    :func:`mapprojax.from_astropy` before the cache is consulted, which costs
+    one eager conversion per WCS (~0.4 ms without SIP, ~1.5 ms with order-3
+    SIP) and is what the cache-key ordering exists to guarantee.
     """
     if matrix_precision not in MATRIX_PRECISIONS:
         raise ValueError(f"matrix_precision must be one of {MATRIX_PRECISIONS}, got {matrix_precision!r}")
 
-    cache_key = (_wcs_fingerprint(wcs_in), _wcs_fingerprint(wcs_out), matrix_precision)
+    record_in = validated_wcs(wcs_in, precision=matrix_precision)
+    record_out = validated_wcs(wcs_out, precision=matrix_precision)
+
+    cache_key = (_validated_key(record_in, matrix_precision), _validated_key(record_out, matrix_precision))
     cached = _TRANSFORM_CACHE.get(cache_key)
     if cached is not None:
         _TRANSFORM_CACHE.move_to_end(cache_key)
         return cached
 
+    frame_rotation = _rotation_from_descriptors(record_out.descriptor, record_in.descriptor)
     if matrix_precision == "f32":
-        wcs_in_np = _mapprojax_wcs(wcs_in, precision="f32")
-        wcs_out_np = _mapprojax_wcs(wcs_out, precision="f32")
-        frame_rotation = frame_rotation_matrix(wcs_out, wcs_in)
-        reprojector = Reprojector(wcs_out_np, wcs_in_np, frame_rotation=frame_rotation, matrix_precision="f32")
+        reprojector = Reprojector(
+            record_out.mwcs, record_in.mwcs, frame_rotation=frame_rotation, matrix_precision="f32"
+        )
         transform = compose_transform_fp32(reprojector)
     else:
-        mwcs_in = _mapprojax_wcs(wcs_in)
-        mwcs_out = _mapprojax_wcs(wcs_out)
-        rotation = jnp.asarray(frame_rotation_matrix(wcs_out, wcs_in))
-        transform = compose_transform(mwcs_in, mwcs_out, rotation)
+        transform = compose_transform(record_in.mwcs, record_out.mwcs, jnp.asarray(frame_rotation))
 
     _TRANSFORM_CACHE[cache_key] = transform
     if len(_TRANSFORM_CACHE) > _TRANSFORM_CACHE_MAXSIZE:

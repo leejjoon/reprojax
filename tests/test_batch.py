@@ -19,7 +19,7 @@ from reproject import reproject_interp as original_reproject_interp
 from reprojax import reproject_interp_batched
 from reprojax._astropy_wcs import frame_rotation_matrix
 from reprojax.interp import reproject_interp_core
-from reprojax.transform import compose_transform, wcs_params_from_astropy
+from reprojax.transform import _mapprojax_wcs, compose_transform
 
 from _fixtures import make_header, make_sip
 
@@ -53,11 +53,11 @@ def _stack_mwcs_in(headers_in, wcs_out):
     crpixs, cds, crvals, sips, rotations = [], [], [], [], []
     for h in headers_in:
         wcs_in = WCS(h)
-        crpix, cd, crval, sip = wcs_params_from_astropy(wcs_in)
-        crpixs.append(crpix)
-        cds.append(cd)
-        crvals.append(crval)
-        sips.append(sip)
+        mwcs = _mapprojax_wcs(wcs_in)
+        crpixs.append(np.asarray(mwcs.crpix, dtype=float).tolist())
+        cds.append(np.asarray(mwcs.cd, dtype=float).tolist())
+        crvals.append(np.asarray(mwcs.crval, dtype=float).tolist())
+        sips.append(mwcs.sip)
         rotations.append(frame_rotation_matrix(wcs_out, wcs_in))
 
     sip_batch = Sip(
@@ -84,7 +84,7 @@ def test_batched_matches_looped_single_exposures():
 
     h_out = make_header((15.0, 15.0), (180.0, 30.0), 1.0, naxis=(30, 30))
     wcs_out = WCS(h_out)
-    mwcs_out = Tan(*wcs_params_from_astropy(wcs_out)[:3], sip=None, precision="f64")
+    mwcs_out = _mapprojax_wcs(wcs_out)
 
     mwcs_in_batch, rotation_batch = _stack_mwcs_in(headers_in, wcs_out)
 
@@ -99,8 +99,7 @@ def test_batched_matches_looped_single_exposures():
 
     for i in range(n):
         wcs_in_i = WCS(headers_in[i])
-        crpix_i, cd_i, crval_i, sip_i = wcs_params_from_astropy(wcs_in_i)
-        mwcs_in_i = Tan(crpix_i, cd_i, crval_i, sip=sip_i, precision="f64")
+        mwcs_in_i = _mapprojax_wcs(wcs_in_i)
         transform_i = compose_transform(mwcs_in_i, mwcs_out, rotation_batch[i])
         result_i, footprint_i = reproject_interp_core(data_batch[i], x_out, y_out, transform_i, order=1)
 
@@ -124,7 +123,7 @@ def test_batched_jit_on_gpu_at_spherex_scale():
     ny_out = nx_out = 1201  # matches the real Galactic template scale
     h_out = make_header((600.0, 600.0), (180.0, 30.0), 1.0, naxis=(nx_out, ny_out))
     wcs_out = WCS(h_out)
-    mwcs_out = Tan(*wcs_params_from_astropy(wcs_out)[:3], sip=None, precision="f64")
+    mwcs_out = _mapprojax_wcs(wcs_out)
     mwcs_in_batch, rotation_batch = _stack_mwcs_in(headers_in, wcs_out)
 
     y_out, x_out = jnp.meshgrid(
@@ -160,7 +159,7 @@ def test_benchmark_batched_vs_looped_original(capsys):
     ny_out = nx_out = 1201
     h_out = make_header((600.0, 600.0), (180.0, 30.0), 1.0, naxis=(nx_out, ny_out))
     wcs_out = WCS(h_out)
-    mwcs_out = Tan(*wcs_params_from_astropy(wcs_out)[:3], sip=None, precision="f64")
+    mwcs_out = _mapprojax_wcs(wcs_out)
     mwcs_in_batch, rotation_batch = _stack_mwcs_in(headers_in, wcs_out)
 
     y_out, x_out = jnp.meshgrid(

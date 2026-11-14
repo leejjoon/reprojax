@@ -51,10 +51,10 @@ from reproject import reproject_interp as original_reproject_interp
 from reproject.adaptive import reproject_adaptive as original_reproject_adaptive
 
 import reprojax
-from reprojax._astropy_wcs import frame_rotation_matrix, wcs_params_from_astropy
+from reprojax._astropy_wcs import frame_rotation_matrix
 from reprojax.adaptive import reproject_adaptive_core
 from reprojax.interp import reproject_interp_core
-from reprojax.transform import build_transform, compose_transform
+from reprojax.transform import _mapprojax_wcs, build_transform, compose_transform
 
 DATA_DIR = Path(__file__).parent.parent / "tests" / "data"
 BATCH_SIZE = 8
@@ -124,11 +124,11 @@ def make_batch(header_in, header_out, data, n=BATCH_SIZE, seed=0):
     crpixs, cds, crvals, sips, rotations = [], [], [], [], []
     for h in headers:
         wcs_in = WCS(h)
-        crpix, cd, crval, sip = wcs_params_from_astropy(wcs_in)
-        crpixs.append(crpix)
-        cds.append(cd)
-        crvals.append(crval)
-        sips.append(sip)
+        mwcs = _mapprojax_wcs(wcs_in)
+        crpixs.append(np.asarray(mwcs.crpix, dtype=float).tolist())
+        cds.append(np.asarray(mwcs.cd, dtype=float).tolist())
+        crvals.append(np.asarray(mwcs.crval, dtype=float).tolist())
+        sips.append(mwcs.sip)
         rotations.append(frame_rotation_matrix(wcs_out, wcs_in))
 
     sip_batch = Sip(
@@ -227,7 +227,7 @@ def main():
     print(f"\n--- Batch of {BATCH_SIZE}: {data.shape} -> {shape_out} ---")
 
     headers, data_batch, mwcs_in_batch, rotation_batch = make_batch(header_in, header_out, data)
-    mwcs_out = Tan(*wcs_params_from_astropy(wcs_out)[:3], sip=None, precision="f64")
+    mwcs_out = _mapprojax_wcs(wcs_out)
 
     t0 = time.perf_counter()
     for h in headers:

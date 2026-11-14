@@ -1,0 +1,251 @@
+"""Tier-1 validation: the refusal set and the cache-key invariants (Stage 5).
+
+Two things are checked throughout:
+  - an unsupported input is refused on **every** call, including when a warm
+    cache entry exists for a WCS it would have collided with before this
+    change (TPV normalises to plain TAN, so it shares every raw attribute);
+  - the transform cache key is built from validated output, so equivalent
+    encodings share one entry and genuinely different WCSes never do.
+
+Module-level imports are restricted to symbols that exist before the Stage 5
+migration, so the pre-fix falsification runs fail on assertions.
+"""
+
+import numpy as np
+import pytest
+from astropy.io import fits
+from astropy.wcs import WCS
+
+from reprojax import reproject_adaptive, reproject_interp
+from reprojax.transform import _TRANSFORM_CACHE, build_transform
+
+from _fixtures import make_header
+
+PIX_TOL = 1e-4
+
+
+def _tan(**extra):
+    h = make_header((256.0, 256.0), (180.0, 30.0), 1.0, naxis=(64, 64))
+    for key, value in extra.items():
+        h[key] = value
+    return h
+
+
+def _random_data(header, seed=0):
+    rng = np.random.default_rng(seed)
+    return rng.uniform(0.0, 1.0, size=(header["NAXIS2"], header["NAXIS1"]))
+
+
+# ---------------------------------------------------------------------------
+# TPV: the hidden-distortion case.  Astropy reports ctype == RA---TAN,
+# has_distortion False and get_pv() == [], so every raw attribute matches a
+# plain TAN header -- and the old fingerprint therefore collided.
+# ---------------------------------------------------------------------------
+
+
+def test_tpv_header_is_refused():
+    h = _tan(CTYPE1="RA---TPV", CTYPE2="DEC--TPV", PV1_1=3e-4, PV1_2=1e-4)
+    with pytest.raises(ValueError, match="TPV"):
+        build_transform(WCS(h), WCS(h))
+
+
+def test_tpv_refusal_is_reachable_with_a_warm_tan_entry():
+    """Validation runs before the cache lookup, so a warm TAN entry cannot
+    shadow the TPV refusal.  Pre-fix this returned the TAN transform.
+    """
+    build_transform.cache_clear()
+    tan = WCS(_tan())
+    build_transform(tan, tan)
+    assert len(_TRANSFORM_CACHE) == 1
+
+    tpv = WCS(_tan(CTYPE1="RA---TPV", CTYPE2="DEC--TPV", PV1_1=3e-4, PV1_2=1e-4))
+    with pytest.raises(ValueError, match="TPV"):
+        build_transform(tpv, tpv)
+
+
+def test_a_refusal_does_not_populate_the_cache():
+    build_transform.cache_clear()
+    tan = WCS(_tan())
+    build_transform(tan, tan)
+    before = len(_TRANSFORM_CACHE)
+
+    tpv = WCS(_tan(CTYPE1="RA---TPV", CTYPE2="DEC--TPV", PV1_1=3e-4))
+    with pytest.raises(ValueError):
+        build_transform(tpv, tan)
+    assert len(_TRANSFORM_CACHE) == before
+
+
+def test_cubes_are_refused_with_the_celestial_message():
+    """All three positions, for a Header *and* a WCS, through both wrappers.
+
+    The Header row is why the guard lives in ``_as_wcs``: a 3-D header still
+    yields a valid 2-D shape, so shape inference cannot see the third axis.
+    """
+    h_cube = fits.Header()
+    h_cube["NAXIS"] = 3
+    h_cube["NAXIS1"], h_cube["NAXIS2"], h_cube["NAXIS3"] = 64, 64, 2
+    h_cube["CTYPE1"], h_cube["CTYPE2"], h_cube["CTYPE3"] = "RA---TAN", "DEC--TAN", "FREQ"
+    h_cube["CRPIX1"], h_cube["CRPIX2"], h_cube["CRPIX3"] = 32.0, 32.0, 1.0
+    h_cube["CRVAL1"], h_cube["CRVAL2"], h_cube["CRVAL3"] = 180.0, 30.0, 1e9
+    h_cube["CD1_1"], h_cube["CD2_2"], h_cube["CD3_3"] = -1.0 / 3600, 1.0 / 3600, 1e6
+
+    h_2d = make_header((32.0, 32.0), (180.0, 30.0), 1.0, naxis=(64, 64))
+    data = _random_data(h_2d)
+
+    for wrapper in (reproject_interp, reproject_adaptive):
+        # input as a 3-D WCS and as a 3-D Header
+        with pytest.raises(ValueError, match="celestial"):
+            wrapper((np.zeros((2, 64, 64), dtype=np.float32), WCS(h_cube)), h_2d, shape_out=(64, 64))
+        with pytest.raises(ValueError, match="celestial"):
+            wrapper((np.zeros((2, 64, 64), dtype=np.float32), h_cube), h_2d, shape_out=(64, 64))
+        # output_projection as a 3-D WCS and as a 3-D Header
+        with pytest.raises(ValueError, match="celestial"):
+            wrapper((data, WCS(h_2d)), WCS(h_cube), shape_out=(64, 64))
+        with pytest.raises(ValueError, match="celestial"):
+            wrapper((data, WCS(h_2d)), h_cube, shape_out=(64, 64))
+
+
+def test_a_cube_without_shape_information_keeps_the_generic_message():
+    """A 3-axis WCS whose naxis is 3 is refused in ``_as_wcs``; the generic
+    "shape_out could not be inferred" message is reserved for a 2-D WCS that
+    carries no ``array_shape`` at all.
+    """
+    h = make_header((256.0, 256.0), (180.0, 30.0), 1.0, naxis=(64, 64))
+    for key in ("NAXIS1", "NAXIS2"):
+        del h[key]
+    with pytest.raises(ValueError, match="shape_out could not be inferred"):
+        reproject_interp((np.zeros((64, 64), dtype=np.float32), WCS(h)), WCS(h))
+
+
+def test_every_refusal_named_in_the_milestone_is_reachable():
+    """cpdis1, LONPOLE != 180 and a PV card on TAN, each through
+    ``build_transform`` -- these are the refusals 0.2.0 did not have.
+    """
+    build_transform.cache_clear()
+    from astropy.io import fits as _fits
+
+    cases = []
+
+    # A lookup table cannot even be assembled without the distortion HDU, and
+    # astropy raises on construction -- still a ValueError on the input path.
+    lut = _tan()
+    lut["CPDIS1"] = "LOOKUP"
+    lut["CPDIS2"] = "LOOKUP"
+    with pytest.raises(ValueError):
+        WCS(lut)
+
+    cases.append((WCS(_tan(CRVAL2=90.0)), "LONPOLE"))
+    cases.append((WCS(_tan(PV1_1=0.0)), "PV"))
+
+    for wcs, pattern in cases:
+        with pytest.raises(ValueError, match=pattern):
+            build_transform(wcs, wcs)
+
+    # CRVAL2 = -90 is still accepted: its wcslib default LONPOLE is 180.
+    accepted = WCS(_tan(CRVAL2=-90.0))
+    build_transform(accepted, accepted)
+
+
+def test_preserve_units_is_honoured():
+    """``preserve_units=True`` used to be read as if arcsec were degrees
+    (~250 px off at 1"/px); the validated leaves are per-axis converted.
+    """
+    base = dict(
+        NAXIS=2,
+        NAXIS1=64,
+        NAXIS2=64,
+        CRPIX1=32.0,
+        CRPIX2=32.0,
+        CRVAL1=10.0,
+        CRVAL2=20.0,
+        CDELT1=-1.0,
+        CDELT2=1.0,
+        CUNIT1="arcsec",
+        CUNIT2="arcsec",
+        CTYPE1="RA---TAN",
+        CTYPE2="DEC--TAN",
+    )
+    preserved = WCS(base, preserve_units=True)
+    degrees = WCS(
+        {
+            **base,
+            "CUNIT1": "deg",
+            "CUNIT2": "deg",
+            "CRVAL1": 10.0 / 3600.0,
+            "CRVAL2": 20.0 / 3600.0,
+            "CDELT1": -1.0 / 3600.0,
+            "CDELT2": 1.0 / 3600.0,
+        }
+    )
+
+    transform = build_transform(preserved, preserved)
+    x = np.array([0.0, 31.5, 63.0])
+    y = np.array([0.0, 31.5, 63.0])
+    x_in, y_in = (np.asarray(part) for part in transform(x, y))
+    assert np.isfinite(x_in).all() and np.isfinite(y_in).all()
+    np.testing.assert_allclose(x_in, x, rtol=0, atol=PIX_TOL)
+    np.testing.assert_allclose(y_in, y, rtol=0, atol=PIX_TOL)
+
+    # And the leaves agree: the same sky point from both encodings.
+    from reprojax.transform import _mapprojax_wcs
+
+    a = _mapprojax_wcs(preserved)
+    b = _mapprojax_wcs(degrees)
+    np.testing.assert_allclose(np.asarray(a.cd) * 3600.0, np.asarray(b.cd) * 3600.0, rtol=1e-12, atol=0)
+
+
+def test_pc_cdelt_and_cd_headers_share_one_transform():
+    build_transform.cache_clear()
+    cd_form = make_header((32.0, 32.0), (180.0, 30.0), 1.0, naxis=(64, 64))
+    pc_form = cd_form.copy()
+    for key in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"):
+        del pc_form[key]
+    pc_form["CDELT1"], pc_form["CDELT2"] = -1.0 / 3600.0, 1.0 / 3600.0
+    pc_form["PC1_1"], pc_form["PC2_2"] = 1.0, 1.0
+
+    first = build_transform(WCS(cd_form), WCS(cd_form))
+    second = build_transform(WCS(pc_form), WCS(pc_form))
+    assert first is second
+    assert len(_TRANSFORM_CACHE) == 1
+
+
+def test_reparsed_header_hits_the_cache():
+    build_transform.cache_clear()
+    h = make_header((32.0, 32.0), (180.0, 30.0), 1.0, naxis=(64, 64))
+    first = build_transform(WCS(h), WCS(h))
+    second = build_transform(WCS(fits.Header(h)), WCS(fits.Header(h)))
+    assert first is second
+
+
+def test_leaf_key_handles_contiguity_and_signed_zero():
+    from reprojax.transform import _leaf_key
+
+    base = np.array([[-1.0 / 3600, 0.0], [0.0, 1.0 / 3600]])
+    neg_zero = base.copy()
+    neg_zero[1, 0] = -0.0
+    non_contiguous = np.asfortranarray(base)
+
+    assert _leaf_key(base) == _leaf_key(neg_zero)
+    assert _leaf_key(base) == _leaf_key(non_contiguous)
+    # ... and the normalisation never mutated the caller's array.
+    assert np.signbit(neg_zero[1, 0])
+
+
+def test_validated_key_distinguishes_frame_descriptors():
+    from reprojax._astropy_wcs import FrameDescriptor, ValidatedWcs
+    from reprojax.transform import _mapprojax_wcs, _validated_key
+
+    mwcs = _mapprojax_wcs(WCS(make_header((32.0, 32.0), (180.0, 30.0), 1.0, naxis=(64, 64))))
+    ra_dec = ("RA--", "DEC-")
+
+    def key(kind, equinox, axis_pair):
+        descriptor = FrameDescriptor(kind, equinox, axis_pair, None)
+        return _validated_key(ValidatedWcs(mwcs, descriptor), "f64")
+
+    assert key("icrs", None, ra_dec) != key("fk5", 2000.0, ra_dec)
+    assert key("fk5", 2000.0, ra_dec) != key("fk5", 1950.0, ra_dec)
+    assert key("galactic", None, ra_dec) != key("galactic", None, ("GLON", "GLAT"))
+    # matrix_precision is part of the key
+    assert _validated_key(ValidatedWcs(mwcs, FrameDescriptor("icrs", None, ra_dec, None)), "f64") != _validated_key(
+        ValidatedWcs(mwcs, FrameDescriptor("icrs", None, ra_dec, None)), "f32"
+    )

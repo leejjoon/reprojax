@@ -15,7 +15,6 @@ import pytest
 from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 
-from reprojax._astropy_wcs import projection_code
 from reprojax.transform import _mapprojax_wcs, build_transform
 
 from _fixtures import make_header, make_sip
@@ -269,8 +268,8 @@ def test_invalid_points_return_nan():
 def test_unsupported_projection_raises():
     h = make_header((512.0, 512.0), (180.0, 30.0), 1.0, ctype=("RA---AZP", "DEC--AZP"))
     wcs = WCS(h)
-    with pytest.raises(NotImplementedError, match="AZP"):
-        projection_code(wcs)
+    with pytest.raises(ValueError, match="AZP"):
+        build_transform(wcs, wcs)
 
 
 # ---------------------------------------------------------------------------

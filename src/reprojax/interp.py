@@ -191,11 +191,27 @@ def reproject_interp_batched(
 
 
 def _as_wcs(wcs_or_header):
-    if isinstance(wcs_or_header, WCS):
-        return wcs_or_header
+    """Coerce a WCS or Header to a two-axis celestial ``WCS``.
+
+    A cube (``naxis != 2``) is refused here rather than deep inside
+    mapprojax, so the message names the fix. Doing it at this seam covers
+    both the input and the output side, for a ``Header`` and for a ``WCS``,
+    before any output grid is allocated; shape inference alone cannot see the
+    extra axis once ``NAXIS1``/``NAXIS2`` give a valid 2-D shape.
+    """
     if isinstance(wcs_or_header, Header):
-        return WCS(wcs_or_header)
-    raise TypeError(f"expected an astropy WCS or Header, got {type(wcs_or_header)!r}")
+        wcs = WCS(wcs_or_header)
+    elif isinstance(wcs_or_header, WCS):
+        wcs = wcs_or_header
+    else:
+        raise TypeError(f"expected an astropy WCS or Header, got {type(wcs_or_header)!r}")
+
+    if wcs.naxis != 2:
+        raise ValueError(
+            f"expected a two-axis celestial WCS, got naxis = {wcs.naxis}; "
+            "pass a two-axis celestial WCS, e.g. wcs.celestial"
+        )
+    return wcs
 
 
 def _to_native_byte_order(data):

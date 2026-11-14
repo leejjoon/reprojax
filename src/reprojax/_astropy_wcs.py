@@ -1,74 +1,167 @@
-"""Host-side extraction of mapprojax WCS parameters and frame rotations from astropy.
+"""Host-side WCS validation and frame rotations, on top of mapprojax.
 
-Everything in this module runs eagerly in NumPy/astropy, at transform-build
+Everything in this module runs eagerly in NumPy/astropy at transform-build
 time — never inside the jit-compiled :class:`~reprojax.core.PixelTransform`
-itself.
+itself. :func:`mapprojax.from_astropy` owns the numerical conversion and its
+refusals; this module adds the two things reprojax needs on top of it: a
+classification of the celestial frame pair, and the rotation between them.
 """
 
+from typing import NamedTuple
+
 import numpy as np
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import FK5, Galactic, ICRS, SkyCoord
+from astropy.wcs import WCS
 from astropy.wcs.utils import wcs_to_celestial_frame
-from mapprojax.sip import Sip
+from mapprojax import from_astropy
 
-#: FITS projection code -> mapprojax provider key (see transform.py).
-SUPPORTED_PROJECTIONS = ("TAN", "SIN")
+#: CTYPE prefixes of the two supported celestial axis pairs, in world-axis
+#: order: (longitude, latitude).
+_AXIS_PAIRS = {("RA--", "DEC-"): "equatorial", ("GLON", "GLAT"): "galactic"}
+
+#: Tolerance for the rotation being a rigid rotation. The basis construction
+#: measures ~2e-16 on this platform, so four orders of headroom.
+_ROTATION_ATOL = 1e-12
 
 
-def projection_code(wcs):
-    """The 3-letter FITS projection code for an astropy WCS's first axis.
+class FrameDescriptor(NamedTuple):
+    """A celestial frame reduced to the primitives that identify it.
 
-    Per the WCS papers, CTYPEia's first 8 characters are always
-    ``"<axis>-<code>"`` with the code in the last 3 characters of that
-    8-character field — true whether or not a further distortion suffix
-    (``-SIP``, ``-TPV``, ...) follows.
+    ``frame`` is the resolved astropy frame, kept so the rotation can be
+    computed with :class:`~astropy.coordinates.SkyCoord` without resolving the
+    WCS twice; it is deliberately excluded from the transform cache key, which
+    uses only the primitive fields.
     """
-    ctype = wcs.wcs.ctype[0]
-    code = ctype[:8][-3:].strip()
-    if code not in SUPPORTED_PROJECTIONS:
-        raise NotImplementedError(
-            f"Unsupported projection {code!r} (from CTYPE {ctype!r}); "
-            f"reprojax currently supports: {SUPPORTED_PROJECTIONS}"
+
+    kind: str
+    equinox: float | None
+    axis_pair: tuple[str, str]
+    frame: object
+
+
+class ValidatedWcs(NamedTuple):
+    """A validated mapprojax kernel plus the descriptor of its pixel grid."""
+
+    mwcs: object
+    descriptor: FrameDescriptor
+
+
+def frame_descriptor(wcs):
+    """Classify ``wcs``'s celestial frame, or raise ``ValueError``.
+
+    Only pairs known to be related by a rigid rotation are accepted: ICRS,
+    FK5 at an explicit equinox, and Galactic. FK4 (whose E-terms are not a
+    rotation) and the ecliptic frames are refused, and so is any CTYPE axis
+    pair that does not match the resolved frame — astropy resolves
+    ``ELON``/``ELAT`` to ``ICRS``, and resolves by ``wcs.wcs.lng``, which
+    accepts swapped axes.
+    """
+    if wcs.naxis != 2:
+        raise ValueError(
+            f"expected a two-axis celestial WCS, got naxis = {wcs.naxis}; "
+            "pass a two-axis celestial WCS, e.g. wcs.celestial"
         )
-    return code
+    try:
+        frame = wcs_to_celestial_frame(wcs)
+    except ValueError as exc:
+        raise ValueError(
+            f"cannot resolve the celestial frame of CTYPE1 = {wcs.wcs.ctype[0]!r}, "
+            f"CTYPE2 = {wcs.wcs.ctype[1]!r}: {exc}"
+        ) from exc
+
+    axis_pair = (str(wcs.wcs.ctype[0])[:4], str(wcs.wcs.ctype[1])[:4])
+    if axis_pair not in _AXIS_PAIRS:
+        raise ValueError(
+            f"unsupported celestial axis pair {axis_pair} "
+            f"(CTYPE {wcs.wcs.ctype[0]!r}, {wcs.wcs.ctype[1]!r}); reprojax needs "
+            "RA---/DEC-- or GLON/GLAT"
+        )
+
+    kind = _AXIS_PAIRS[axis_pair]
+    if type(frame) is ICRS and kind == "equatorial":
+        return FrameDescriptor("icrs", None, axis_pair, frame)
+    if type(frame) is FK5 and kind == "equatorial":
+        equinox = float(frame.equinox.jyear)
+        if not np.isfinite(equinox):
+            raise ValueError(f"FK5 frame has a non-finite equinox ({frame.equinox!r})")
+        return FrameDescriptor("fk5", equinox, axis_pair, frame)
+    if type(frame) is Galactic and kind == "galactic":
+        return FrameDescriptor("galactic", None, axis_pair, frame)
+
+    raise ValueError(
+        f"unsupported celestial frame {frame!r} for axis pair {axis_pair} "
+        f"(CTYPE {wcs.wcs.ctype[0]!r}, {wcs.wcs.ctype[1]!r}); reprojax supports "
+        "ICRS, FK5 at an explicit equinox, and Galactic"
+    )
 
 
-def wcs_params_from_astropy(wcs):
-    """Extract ``(crpix, cd, crval, sip)`` from an astropy WCS.
+def validated_wcs(wcs, *, precision):
+    """Validate ``wcs`` and return its kernel plus descriptor.
 
-    ``crpix`` is converted to mapprojax's 0-based convention (astropy's
-    ``wcs.wcs.crpix`` is 1-based, matching the FITS ``CRPIXi`` keywords).
-    ``cd`` is the CD-matrix-equivalent linear transform regardless of
-    whether the header used ``CDi_j`` or ``PCi_j``/``CDELTi`` keywords.
+    ``from_astropy`` runs **first**: it checks the caller's object for
+    non-finite parameters, and a later ``wcsset()`` trip can rewrite those
+    values before the check sees them.
     """
-    crpix = (np.asarray(wcs.wcs.crpix, dtype=float) - 1.0).tolist()
-    crval = np.asarray(wcs.wcs.crval, dtype=float).tolist()
-    cd = np.asarray(wcs.pixel_scale_matrix, dtype=float).tolist()
+    return ValidatedWcs(from_astropy(wcs, precision=precision), frame_descriptor(wcs))
 
-    sip = None
-    if wcs.sip is not None:
-        sip = Sip(a=wcs.sip.a, b=wcs.sip.b, ap=wcs.sip.ap, bp=wcs.sip.bp)
 
-    return crpix, cd, crval, sip
+def _rotation_from_descriptors(desc_from, desc_to):
+    """3x3 matrix rotating Cartesian unit vectors from ``desc_from``'s frame to
+    ``desc_to``'s, validated as a rigid rotation.
+    """
+    if desc_from.frame.is_equivalent_frame(desc_to.frame):
+        return np.eye(3)
+
+    basis_lon = [0.0, 90.0, 0.0]
+    basis_lat = [0.0, 0.0, 90.0]
+    cart = SkyCoord(basis_lon, basis_lat, unit="deg", frame=desc_from.frame).transform_to(
+        desc_to.frame
+    ).cartesian
+
+    # Transformed basis vectors as columns: matrix @ v_from == v_to.
+    rotation = np.stack([cart.x.value, cart.y.value, cart.z.value], axis=0)
+
+    residual = np.abs(rotation @ rotation.T - np.eye(3)).max()
+    determinant = np.linalg.det(rotation)
+    if not np.isfinite(rotation).all() or residual > _ROTATION_ATOL or abs(determinant - 1.0) > _ROTATION_ATOL:
+        raise ValueError(
+            f"the rotation between {desc_from.kind} and {desc_to.kind} is not rigid "
+            f"(orthonormality residual {residual:.3e}, determinant {determinant:.6f}); "
+            "these frames are not related by a pure rotation"
+        )
+    return rotation
 
 
 def frame_rotation_matrix(wcs_from, wcs_to):
     """3x3 matrix rotating Cartesian unit vectors from ``wcs_from``'s celestial
     frame to ``wcs_to``'s.
 
-    Returns the identity when the two WCSes share the same celestial frame
-    (the common case, and the only case that avoids an astropy frame
-    transform).
+    Returns the exact identity when the two frames are equivalent (the common
+    case), and a validated rotation otherwise.
     """
-    frame_from = wcs_to_celestial_frame(wcs_from)
-    frame_to = wcs_to_celestial_frame(wcs_to)
+    return _rotation_from_descriptors(frame_descriptor(wcs_from), frame_descriptor(wcs_to))
 
-    if frame_from.name == frame_to.name:
-        return np.eye(3)
 
-    basis_lon = [0.0, 90.0, 0.0]
-    basis_lat = [0.0, 0.0, 90.0]
-    basis = SkyCoord(basis_lon, basis_lat, unit="deg", frame=frame_from)
-    cart = basis.transform_to(frame_to).cartesian
+def wcs_params_from_astropy(wcs):
+    """``(crpix, cd, crval, sip)`` leaves of ``wcs``'s validated kernel."""
+    mwcs = from_astropy(wcs, precision="f64")
+    return (
+        np.asarray(mwcs.crpix, dtype=float).tolist(),
+        np.asarray(mwcs.cd, dtype=float).tolist(),
+        np.asarray(mwcs.crval, dtype=float).tolist(),
+        mwcs.sip,
+    )
 
-    # Transformed basis vectors as columns: matrix @ v_from == v_to.
-    return np.stack([cart.x.value, cart.y.value, cart.z.value], axis=0)
+
+__all__ = [
+    "FrameDescriptor",
+    "ValidatedWcs",
+    "frame_descriptor",
+    "frame_rotation_matrix",
+    "validated_wcs",
+    "wcs_params_from_astropy",
+]
+
+# ``WCS`` is re-exported for the convenience of callers that only import this
+# module; it keeps ``isinstance`` checks in tests and benchmarks unchanged.
+_ = WCS

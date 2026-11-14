@@ -361,7 +361,7 @@ def test_unsupported_order_raises():
 def test_unsupported_projection_raises():
     h_in = make_header((100.0, 100.0), (180.0, 30.0), 1.0, ctype=("RA---AZP", "DEC--AZP"), naxis=(200, 200))
     h_out = make_header((100.0, 100.0), (180.0, 30.0), 1.0, naxis=(200, 200))
-    with pytest.raises(NotImplementedError, match="AZP"):
+    with pytest.raises(ValueError, match="AZP"):
         reproject_interp((_random_data(h_in), WCS(h_in)), WCS(h_out), shape_out=(200, 200))
 
 

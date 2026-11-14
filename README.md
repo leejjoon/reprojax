@@ -17,7 +17,12 @@ reprojax's own.
 0.2.0, first public release. The validated scope is deliberate:
 
 - **Projections**: TAN and SIN, with SIP distortion. Anything else raises
-  `NotImplementedError`.
+  `ValueError`, and so does any distortion convention the kernel cannot
+  reproduce (TPV, TPD, `-TAB`, lookup tables).
+- **Frames**: ICRS, FK5 at an explicit equinox, and Galactic; the rotation
+  between them is computed and checked to be rigid. FK4 (whose E-terms are
+  not a rotation) and the ecliptic frames are refused rather than silently
+  reinterpreted.
 - **Algorithms**: bilinear/nearest interpolation (`reproject_interp`) and the
   DeForest (2004) adaptive anti-aliased algorithm (`reproject_adaptive`).
 - **Reference**: `reproject` 0.21.0 is the golden accuracy reference. It is a

@@ -2,9 +2,10 @@
 
 This is reprojax's central seam. Reprojection algorithms are written against
 this contract, not against any particular WCS library — mapprojax is the
-default provider (see :mod:`reprojax.transform`), and other providers (e.g.
-an astropy-WCS ``pure_callback`` fallback for projections mapprojax doesn't
-cover) can be added later behind the same interface.
+default provider (see :mod:`reprojax.transform`), and another provider could
+be added later behind the same interface. Unsupported inputs are not
+papered over: an unsupported projection or distortion convention raises,
+and ``mapprojax.from_astropy``'s refusal list is the contract.
 
 Contract
 --------

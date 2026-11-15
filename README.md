@@ -17,8 +17,10 @@ reprojax's own.
 0.2.0, first public release. The validated scope is deliberate:
 
 - **Projections**: TAN and SIN, with SIP distortion. Anything else raises
-  `ValueError`, and so does any distortion convention the kernel cannot
-  reproduce (TPV, TPD, `-TAB`, lookup tables).
+  `ValueError`, and so does any distortion convention this library refuses
+  (TPV, TPD, lookup tables). One caveat: a `-TAB` header needs its `WCS-TAB`
+  extension HDU, and astropy fails while building the `WCS` when it is
+  missing -- so that input fails at `WCS(header)`, before reprojax runs.
 - **Frames**: ICRS, FK5 at an explicit equinox, and Galactic; the rotation
   between them is computed and checked to be rigid. FK4 (whose E-terms are
   not a rotation) and the ecliptic frames are refused rather than silently

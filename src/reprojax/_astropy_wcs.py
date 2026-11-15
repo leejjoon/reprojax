@@ -11,7 +11,6 @@ from typing import NamedTuple
 
 import numpy as np
 from astropy.coordinates import FK5, Galactic, ICRS, SkyCoord
-from astropy.wcs import WCS
 from astropy.wcs.utils import wcs_to_celestial_frame
 from mapprojax import from_astropy
 
@@ -142,26 +141,10 @@ def frame_rotation_matrix(wcs_from, wcs_to):
     return _rotation_from_descriptors(frame_descriptor(wcs_from), frame_descriptor(wcs_to))
 
 
-def wcs_params_from_astropy(wcs):
-    """``(crpix, cd, crval, sip)`` leaves of ``wcs``'s validated kernel."""
-    mwcs = from_astropy(wcs, precision="f64")
-    return (
-        np.asarray(mwcs.crpix, dtype=float).tolist(),
-        np.asarray(mwcs.cd, dtype=float).tolist(),
-        np.asarray(mwcs.crval, dtype=float).tolist(),
-        mwcs.sip,
-    )
-
-
 __all__ = [
     "FrameDescriptor",
     "ValidatedWcs",
     "frame_descriptor",
     "frame_rotation_matrix",
     "validated_wcs",
-    "wcs_params_from_astropy",
 ]
-
-# ``WCS`` is re-exported for the convenience of callers that only import this
-# module; it keeps ``isinstance`` checks in tests and benchmarks unchanged.
-_ = WCS

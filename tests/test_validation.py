@@ -98,11 +98,20 @@ def test_cubes_are_refused_with_the_celestial_message():
             wrapper((np.zeros((2, 64, 64), dtype=np.float32), WCS(h_cube)), h_2d, shape_out=(64, 64))
         with pytest.raises(ValueError, match="celestial"):
             wrapper((np.zeros((2, 64, 64), dtype=np.float32), h_cube), h_2d, shape_out=(64, 64))
-        # output_projection as a 3-D WCS and as a 3-D Header
-        with pytest.raises(ValueError, match="celestial"):
-            wrapper((data, WCS(h_2d)), WCS(h_cube), shape_out=(64, 64))
-        with pytest.raises(ValueError, match="celestial"):
-            wrapper((data, WCS(h_2d)), h_cube, shape_out=(64, 64))
+        # output_projection as a 3-D WCS and as a 3-D Header, with shape_out
+        # given AND inferred -- the guard must not depend on shape inference.
+        for shape_out in ((64, 64), None):
+            with pytest.raises(ValueError, match="celestial"):
+                wrapper((data, WCS(h_2d)), WCS(h_cube), shape_out=shape_out)
+            with pytest.raises(ValueError, match="celestial"):
+                wrapper((data, WCS(h_2d)), h_cube, shape_out=shape_out)
+
+    # A 3-D WCS whose array_shape was never populated is still a cube, so the
+    # axis guard catches it before shape inference can complain.
+    no_shape = WCS(h_cube)
+    no_shape.array_shape = None
+    with pytest.raises(ValueError, match="celestial"):
+        reproject_interp((data, WCS(h_2d)), no_shape)
 
 
 def test_a_cube_without_shape_information_keeps_the_generic_message():
@@ -122,21 +131,22 @@ def test_every_refusal_named_in_the_milestone_is_reachable():
     ``build_transform`` -- these are the refusals 0.2.0 did not have.
     """
     build_transform.cache_clear()
-    from astropy.io import fits as _fits
+    from astropy.wcs import DistortionLookupTable
 
-    cases = []
+    # A lookup table attached to the WCS itself (the programmatic path -- a
+    # header card alone cannot be assembled without the distortion HDU).
+    with_lut = WCS(_tan())
+    with_lut.cpdis1 = DistortionLookupTable(
+        np.zeros((4, 4), dtype=np.float32), [1.0, 1.0], [1.0, 1.0], [0.0, 0.0]
+    )
+    assert with_lut.cpdis1 is not None
+    with pytest.raises(ValueError, match="cpdis1"):
+        build_transform(with_lut, with_lut)
 
-    # A lookup table cannot even be assembled without the distortion HDU, and
-    # astropy raises on construction -- still a ValueError on the input path.
-    lut = _tan()
-    lut["CPDIS1"] = "LOOKUP"
-    lut["CPDIS2"] = "LOOKUP"
-    with pytest.raises(ValueError):
-        WCS(lut)
-
-    cases.append((WCS(_tan(CRVAL2=90.0)), "LONPOLE"))
-    cases.append((WCS(_tan(PV1_1=0.0)), "PV"))
-
+    cases = [
+        (WCS(_tan(CRVAL2=90.0)), "LONPOLE"),
+        (WCS(_tan(PV1_1=0.0)), "PV"),
+    ]
     for wcs, pattern in cases:
         with pytest.raises(ValueError, match=pattern):
             build_transform(wcs, wcs)
@@ -146,9 +156,42 @@ def test_every_refusal_named_in_the_milestone_is_reachable():
     build_transform(accepted, accepted)
 
 
+def test_validation_runs_exactly_twice_per_call(monkeypatch):
+    """Validation is unconditional and not duplicated: exactly one
+    ``from_astropy`` and one ``frame_descriptor`` per WCS, twice per
+    ``build_transform``, on both a miss and a warm hit.
+    """
+    from reprojax import _astropy_wcs
+
+    build_transform.cache_clear()
+    calls = {"from_astropy": 0, "frame_descriptor": 0}
+    real_from_astropy = _astropy_wcs.from_astropy
+    real_descriptor = _astropy_wcs.frame_descriptor
+
+    def counting_from_astropy(*args, **kwargs):
+        calls["from_astropy"] += 1
+        return real_from_astropy(*args, **kwargs)
+
+    def counting_descriptor(*args, **kwargs):
+        calls["frame_descriptor"] += 1
+        return real_descriptor(*args, **kwargs)
+
+    monkeypatch.setattr(_astropy_wcs, "from_astropy", counting_from_astropy)
+    monkeypatch.setattr(_astropy_wcs, "frame_descriptor", counting_descriptor)
+
+    h = make_header((32.0, 32.0), (180.0, 30.0), 1.0, naxis=(64, 64))
+    build_transform(WCS(h), WCS(h))  # miss
+    assert calls == {"from_astropy": 2, "frame_descriptor": 2}
+
+    build_transform(WCS(h), WCS(h))  # warm hit: still validates both
+    assert calls == {"from_astropy": 4, "frame_descriptor": 4}
+
+
 def test_preserve_units_is_honoured():
-    """``preserve_units=True`` used to be read as if arcsec were degrees
-    (~250 px off at 1"/px); the validated leaves are per-axis converted.
+    """``preserve_units=True`` used to be read as if arcsec were degrees: on
+    this fixture the pre-fix kernel put the reference pixel 22.35 deg away on
+    the sky (astropy gives 0.00306 deg). The validated leaves are converted
+    per axis.
     """
     base = dict(
         NAXIS=2,
@@ -246,6 +289,21 @@ def test_validated_key_distinguishes_frame_descriptors():
     assert key("fk5", 2000.0, ra_dec) != key("fk5", 1950.0, ra_dec)
     assert key("galactic", None, ra_dec) != key("galactic", None, ("GLON", "GLAT"))
     # matrix_precision is part of the key
-    assert _validated_key(ValidatedWcs(mwcs, FrameDescriptor("icrs", None, ra_dec, None)), "f64") != _validated_key(
-        ValidatedWcs(mwcs, FrameDescriptor("icrs", None, ra_dec, None)), "f32"
-    )
+    icrs = FrameDescriptor("icrs", None, ra_dec, None)
+    assert _validated_key(ValidatedWcs(mwcs, icrs), "f64") != _validated_key(ValidatedWcs(mwcs, icrs), "f32")
+
+    # SIP inverse_steps is part of the key: a different Newton budget is a
+    # different kernel, so the entries must not collide.
+    from mapprojax.sip import Sip
+    from mapprojax.wcs import Tan
+
+    leaves = mwcs.to_dict()
+
+    def sip_key(steps):
+        sip = Sip(a=np.full((3, 3), 1e-6), b=np.full((3, 3), 1e-6), inverse_steps=steps)
+        kernel = Tan(
+            leaves["crpix"], leaves["cd"], leaves["crval"], sip=sip, precision=leaves["precision"]
+        )
+        return _validated_key(ValidatedWcs(kernel, icrs), "f64")
+
+    assert sip_key(3) != sip_key(5)

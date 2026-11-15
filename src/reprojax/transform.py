@@ -14,6 +14,7 @@ import numpy as np
 from mapprojax.reproject import Reprojector
 
 from ._astropy_wcs import _rotation_from_descriptors, validated_wcs
+from mapprojax import from_astropy
 
 MATRIX_PRECISIONS = ("f64", "f32")
 
@@ -35,8 +36,13 @@ _TRANSFORM_CACHE = OrderedDict()
 
 
 def _mapprojax_wcs(astropy_wcs, precision="f64"):
-    """The mapprojax kernel for one WCS (no pair-level frame checks)."""
-    return validated_wcs(astropy_wcs, precision=precision).mwcs
+    """The mapprojax kernel for one WCS, with no frame-pair checks.
+
+    Single-WCS callers (the batched path, tests, benchmarks) do not have a
+    frame pair, so they must not be subjected to :func:`frame_descriptor`'s
+    allow-list; only :func:`build_transform` decides a rotation.
+    """
+    return from_astropy(astropy_wcs, precision=precision)
 
 
 def _leaf_key(array):
@@ -47,8 +53,8 @@ def _leaf_key(array):
     ``crpix``/``cd`` beside a host-f64 ``crval`` must not collide with the
     f64 entry for the same WCS.
     """
-    canonical = np.where(np.asarray(array) == 0, 0.0, np.asarray(array))
-    canonical = np.ascontiguousarray(canonical)
+    owned = np.array(array, copy=True, order="C")
+    canonical = np.where(owned == 0, 0.0, owned)
     return (canonical.dtype.str, canonical.shape, canonical.tobytes())
 
 

@@ -44,6 +44,7 @@ def _random_data(header, seed=0):
 
 
 def test_tpv_header_is_refused():
+    build_transform.cache_clear()
     h = _tan(CTYPE1="RA---TPV", CTYPE2="DEC--TPV", PV1_1=3e-4, PV1_2=1e-4)
     with pytest.raises(ValueError, match="TPV"):
         build_transform(WCS(h), WCS(h))
@@ -194,10 +195,11 @@ def test_preserve_units_is_honoured():
     to pixel through ``build_transform`` with no error. A self round trip
     cannot see the bug -- both sides use the same kernel, so a wrong sky
     coordinate cancels out. On this fixture the pre-fix kernel left the
-    header's raw numbers in place, putting the reference pixel 21.85 deg from
-    the origin against astropy's 0.0061 deg: a 22.26 deg / 80,145 px
-    disagreement between the two encodings at 1"/px. The leaves are converted
-    per axis, so the two now agree to 4e-10 px, and to the astropy oracle.
+    header's raw numbers in place, putting the reference pixel **22.2687 deg**
+    from the origin where astropy puts it **0.006211 deg** away: a
+    **22.2625 deg** / ≈80,145 px disagreement between the two encodings at
+    1"/px. The leaves are converted per axis, so the two now agree to
+    4e-10 px, and to the astropy pixel oracle.
     """
     base = dict(
         NAXIS=2,
@@ -227,11 +229,11 @@ def test_preserve_units_is_honoured():
         }
     )
 
-    # Output pixels are read in ``degrees``; the same sky must land on the
-    # same pixel when the input WCS is the arcsec encoding, so a correct
-    # transform is the identity on the overlapping grid.
+    # Output pixels are read in ``degrees`` and input pixels in the arcsec
+    # encoding, so a correct transform is the identity on the overlapping
+    # grid.
     build_transform.cache_clear()
-    transform = build_transform(degrees, preserved)
+    transform = build_transform(preserved, degrees)
     x = np.array([0.0, 15.75, 31.5, 47.25, 63.0])
     y = np.array([63.0, 47.25, 31.5, 15.75, 0.0])
     x_in, y_in = (np.asarray(part) for part in transform(x, y))
@@ -239,7 +241,8 @@ def test_preserve_units_is_honoured():
     np.testing.assert_allclose(x_in, x, rtol=0, atol=PIX_TOL)
     np.testing.assert_allclose(y_in, y, rtol=0, atol=PIX_TOL)
 
-    # And against astropy, which is independent of both kernels. ``preserved``
+    # And against astropy, which is independent of both kernels. The forward
+    # direction is degrees -> world -> preserved pixels; ``preserved``
     # reports its world coordinates in arcsec, so scale before the inverse.
     world = degrees.all_pix2world(np.column_stack([x, y]), 0)
     x_ref, y_ref = preserved.all_world2pix(world * 3600.0, 0).T

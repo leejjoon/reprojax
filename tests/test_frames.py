@@ -19,8 +19,10 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.wcs import WCS
 
+from mapprojax.wcs import Sin
+
 from reprojax._astropy_wcs import frame_rotation_matrix
-from reprojax.transform import build_transform
+from reprojax.transform import _mapprojax_wcs, build_transform
 
 from _fixtures import make_header
 
@@ -205,16 +207,30 @@ def test_descriptor_audit_covers_every_suite_fixture():
         assert kind in {"icrs", "fk5", "galactic"}
 
 
-def test_alternate_wcs_version_builds_an_independent_transform():
-    """An ``A``-key alternate WCS resolves to a different projection (SIN)
-    and must build a transform of its own, not reuse the primary TAN one.
+def test_alternate_wcs_version_builds_a_sin_transform():
+    """An ``A``-key alternate WCS is read as its own WCS, not the primary one.
+
+    The alternate carries the full set of cards (CTYPE, CRVAL, CRPIX, CD), so
+    it describes a real SIN grid rather than an all-default one; the kernel it
+    validates to is a ``Sin``, and it maps that grid onto itself.
     """
     header = make_header((256.0, 256.0), (180.0, 30.0), 1.0, naxis=(512, 512))
     header["CTYPE1A"], header["CTYPE2A"] = "RA---SIN", "DEC--SIN"
+    header["CRVAL1A"], header["CRVAL2A"] = 180.0, 30.0
+    header["CRPIX1A"], header["CRPIX2A"] = 256.0, 256.0
+    header["CD1_1A"], header["CD2_2A"] = -1.0 / 3600.0, 1.0 / 3600.0
+
+    alternate_wcs = WCS(header, key="A")
+    assert [str(part) for part in alternate_wcs.wcs.ctype] == ["RA---SIN", "DEC--SIN"]
+    assert isinstance(_mapprojax_wcs(alternate_wcs), Sin)
+
     build_transform.cache_clear()
+    transform = build_transform(alternate_wcs, alternate_wcs)
+    assert transform is not build_transform(WCS(header), WCS(header))
 
-    alternate = build_transform(WCS(header, key="A"), WCS(header, key="A"))
-    primary = build_transform(WCS(header), WCS(header))
-
-    assert WCS(header, key="A").wcs.ctype[0] == "RA---SIN"
-    assert alternate is not primary
+    x = np.array([0.0, 255.5, 511.0])
+    y = np.array([511.0, 255.5, 0.0])
+    x_in, y_in = (np.asarray(part) for part in transform(x, y))
+    assert np.isfinite(x_in).all() and np.isfinite(y_in).all()
+    np.testing.assert_allclose(x_in, x, rtol=0, atol=PIX_TOL)
+    np.testing.assert_allclose(y_in, y, rtol=0, atol=PIX_TOL)

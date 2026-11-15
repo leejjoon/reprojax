@@ -8,9 +8,13 @@ Reports single-host medians (5 warm-ups + 100 reps). Both figures are
 budgeted in the Stage 5 plan: the warm ``build_transform`` cache hit at
 5.0 ms and the warm real-pair ``reproject_interp`` at 0.608 s, CPU only.
 They are machine-specific; another host gives different numbers inside the
-same budgets. The cache-hit row deliberately does not call the returned
-transform, because one JAX dispatch (~27 ms for 1000 points) dwarfs the
-~2 ms build.
+same budgets.
+
+Every timed and untimed row is synchronized with ``jax.block_until_ready``.
+The cache-hit row deliberately does not call the returned transform, because
+one JAX dispatch (~27 ms for 1000 points) dwarfs the ~2 ms build; for the
+``reproject_interp`` row the *whole* result tuple is awaited, not just the
+first array, so the second array cannot leak into the next iteration.
 """
 
 import time
@@ -34,14 +38,21 @@ def _median(values):
     return float(np.median(values)), float(np.percentile(values, 90))
 
 
+def _print_row(label, unit, times):
+    median, p90 = _median(times)
+    print(f"{label}: {median:.3f} {unit} (p90 {p90:.3f}, n={len(times)})")
+
+
 def main():
     h_in = fits.getheader("tests/data/spherex_l2b_v20.fits")
     h_out = fits.Header.fromtextfile("tests/data/galactic_template_header.fits")
     wcs_in, wcs_out = WCS(h_in), WCS(h_out)
 
-    # Warm build_transform cache hit on pre-built WCS objects. This is the
-    # cache-hit cost proper; do not call the returned transform inside the
-    # timing, because a JAX dispatch dwarfs it (~27 ms for a 1000-point call).
+    print(f"jax backend: {jax.default_backend()} ({jax.devices()[0]})")
+
+    # Warm build_transform cache hit on pre-built WCS objects. There is no JAX
+    # work to await here -- build_transform is host-side -- so synchronization
+    # applies only to the warm-up that compiles nothing.
     build_transform(wcs_in, wcs_out)
     for _ in range(WARMUPS):
         build_transform(wcs_in, wcs_out)
@@ -50,8 +61,7 @@ def main():
         start = time.perf_counter()
         build_transform(wcs_in, wcs_out)
         times.append((time.perf_counter() - start) * 1e3)
-    median, p90 = _median(times)
-    print(f"warm build_transform cache hit, pre-built WCS: {median:.3f} ms (p90 {p90:.3f})")
+    _print_row("warm build_transform cache hit, pre-built WCS", "ms", times)
 
     # The same call with two WCS(header) parses added, which is what a
     # per-image path actually pays. The parses were always there.
@@ -60,22 +70,23 @@ def main():
         start = time.perf_counter()
         build_transform(WCS(h_in), WCS(h_out))
         times.append((time.perf_counter() - start) * 1e3)
-    median, p90 = _median(times)
-    print(f"warm build_transform cache hit, fresh WCS(header): {median:.3f} ms (p90 {p90:.3f})")
+    _print_row("warm build_transform cache hit, fresh WCS(header)", "ms", times)
 
-    # Warm real-pair reproject_interp, 2040^2 -> 1201^2.
-    data = fits.getdata("tests/data/spherex_l2b_v20.fits").astype(np.float32)
-    reproject_interp((data, WCS(h_in)), h_out)
+    # Warm real-pair reproject_interp, 2040^2 -> 1201^2, native float32 data
+    # (the FITS array's own dtype; this path is float32 regardless).
+    data = fits.getdata("tests/data/spherex_l2b_v20.fits")
+    print(f"real-pair input: {data.dtype} {data.shape}, output {h_out['NAXIS1']}x{h_out['NAXIS2']}")
+    result = reproject_interp((data, WCS(h_in)), h_out)
+    jax.block_until_ready(result)
     for _ in range(WARMUPS):
-        reproject_interp((data, WCS(h_in)), h_out)
+        jax.block_until_ready(reproject_interp((data, WCS(h_in)), h_out))
     times = []
     for _ in range(REPS):
         start = time.perf_counter()
         result = reproject_interp((data, WCS(h_in)), h_out)
-        jax.block_until_ready(result[0])
+        jax.block_until_ready(result)
         times.append(time.perf_counter() - start)
-    median, p90 = _median(times)
-    print(f"warm real-pair reproject_interp: {median:.3f} s (p90 {p90:.3f})")
+    _print_row("warm real-pair reproject_interp", "s", times)
 
 
 if __name__ == "__main__":

@@ -17,10 +17,11 @@ to be orthonormal with determinant +1. ICRS<->FK5(J2000) already rotated and
 still does; that pair is now covered by a regression test.
 - **A `preserve_units=True` header was read as if its units were degrees.**
 With `CUNIT='arcsec'` and `CRVAL=(10, 20)`, the old extractor fed arcsec
-straight into the kernel, so the reference pixel landed **22.35 deg** away on
-the sky (≈80,000 px at 1"/px) against astropy's 0.00306 deg. Celestial
-units are now converted per axis; the same header agrees to better than
-1e-4 px.
+straight into the kernel, so the reference pixel sat **21.85 deg** from the
+origin on the sky where astropy puts it **0.0061 deg** away -- a **22.26 deg**
+disagreement, ≈80,145 px at 1"/px. Celestial units are now converted per
+axis; the arcsec and degree encodings of the same header agree to better
+than 1e-4 px, and to the astropy pixel oracle.
 - **TPV headers were silently flattened to TAN.** Astropy reports
 `ctype == 'RA---TAN'`, `has_distortion == False` and no PV cards for a TPV
 header while still applying the distortion, and the transform cache keyed on

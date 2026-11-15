@@ -114,10 +114,9 @@ def test_cubes_are_refused_with_the_celestial_message():
         reproject_interp((data, WCS(h_2d)), no_shape)
 
 
-def test_a_cube_without_shape_information_keeps_the_generic_message():
-    """A 3-axis WCS whose naxis is 3 is refused in ``_as_wcs``; the generic
-    "shape_out could not be inferred" message is reserved for a 2-D WCS that
-    carries no ``array_shape`` at all.
+def test_a_two_axis_wcs_without_shape_information_keeps_the_generic_message():
+    """A 2-D WCS with no ``array_shape`` gets the generic message; the cube
+    refusal is the separate axis guard in ``_as_wcs``.
     """
     h = make_header((256.0, 256.0), (180.0, 30.0), 1.0, naxis=(64, 64))
     for key in ("NAXIS1", "NAXIS2"):
@@ -188,10 +187,17 @@ def test_validation_runs_exactly_twice_per_call(monkeypatch):
 
 
 def test_preserve_units_is_honoured():
-    """``preserve_units=True`` used to be read as if arcsec were degrees: on
-    this fixture the pre-fix kernel put the reference pixel 22.35 deg away on
-    the sky (astropy gives 0.00306 deg). The validated leaves are converted
-    per axis.
+    """``preserve_units=True`` used to be read as if arcsec were degrees.
+
+    This is a **cross-encoding** check, not a self round trip: two encodings
+    of the same sky (``CUNIT='arcsec'`` and ``CUNIT='deg'``) must map pixel
+    to pixel through ``build_transform`` with no error. A self round trip
+    cannot see the bug -- both sides use the same kernel, so a wrong sky
+    coordinate cancels out. On this fixture the pre-fix kernel left the
+    header's raw numbers in place, putting the reference pixel 21.85 deg from
+    the origin against astropy's 0.0061 deg: a 22.26 deg / 80,145 px
+    disagreement between the two encodings at 1"/px. The leaves are converted
+    per axis, so the two now agree to 4e-10 px, and to the astropy oracle.
     """
     base = dict(
         NAXIS=2,
@@ -221,20 +227,34 @@ def test_preserve_units_is_honoured():
         }
     )
 
-    transform = build_transform(preserved, preserved)
-    x = np.array([0.0, 31.5, 63.0])
-    y = np.array([0.0, 31.5, 63.0])
+    # Output pixels are read in ``degrees``; the same sky must land on the
+    # same pixel when the input WCS is the arcsec encoding, so a correct
+    # transform is the identity on the overlapping grid.
+    build_transform.cache_clear()
+    transform = build_transform(degrees, preserved)
+    x = np.array([0.0, 15.75, 31.5, 47.25, 63.0])
+    y = np.array([63.0, 47.25, 31.5, 15.75, 0.0])
     x_in, y_in = (np.asarray(part) for part in transform(x, y))
     assert np.isfinite(x_in).all() and np.isfinite(y_in).all()
     np.testing.assert_allclose(x_in, x, rtol=0, atol=PIX_TOL)
     np.testing.assert_allclose(y_in, y, rtol=0, atol=PIX_TOL)
 
-    # And the leaves agree: the same sky point from both encodings.
+    # And against astropy, which is independent of both kernels. ``preserved``
+    # reports its world coordinates in arcsec, so scale before the inverse.
+    world = degrees.all_pix2world(np.column_stack([x, y]), 0)
+    x_ref, y_ref = preserved.all_world2pix(world * 3600.0, 0).T
+    np.testing.assert_allclose(x_in, x_ref, rtol=0, atol=PIX_TOL)
+    np.testing.assert_allclose(y_in, y_ref, rtol=0, atol=PIX_TOL)
+
+    # The leaves carry the conversion too -- crval as well as cd, so a mutant
+    # that scales the matrix but not the reference point is caught here.
+    # ``_mapprojax_wcs`` already returns both leaves in degrees.
     from reprojax.transform import _mapprojax_wcs
 
     a = _mapprojax_wcs(preserved)
     b = _mapprojax_wcs(degrees)
-    np.testing.assert_allclose(np.asarray(a.cd) * 3600.0, np.asarray(b.cd) * 3600.0, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(np.asarray(a.cd), np.asarray(b.cd), rtol=1e-12, atol=0)
+    np.testing.assert_allclose(np.asarray(a.crval), np.asarray(b.crval), rtol=1e-12, atol=0)
 
 
 def test_pc_cdelt_and_cd_headers_share_one_transform():

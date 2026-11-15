@@ -14,16 +14,19 @@ reprojax's own.
 
 ## Status
 
-0.2.0, first public release. The validated scope is deliberate:
+0.3.0.dev0 (unreleased; the 0.3.0 section of `CHANGELOG.md` is the
+changelog for it). The validated scope is deliberate:
 
 - **Projections**: TAN and SIN, with SIP distortion. Anything else raises
   `ValueError`, and so does any distortion convention this library refuses
   (TPV, TPD, lookup tables). One caveat: a `-TAB` header needs its `WCS-TAB`
   extension HDU, and astropy fails while building the `WCS` when it is
   missing -- so that input fails at `WCS(header)`, before reprojax runs.
-- **Frames**: ICRS, FK5 at an explicit equinox, and Galactic; the rotation
-  between them is computed and checked to be rigid. FK4 (whose E-terms are
-  not a rotation) and the ecliptic frames are refused rather than silently
+- **Frames**: ICRS, FK5 (an explicit equinox, or the resolved J2000 default
+  when `RADESYS='FK5'` carries no `EQUINOX` card), and Galactic. The
+  rotation between them is computed and checked to be rigid, so two FK5
+  frames at different equinoxes now differ. FK4 (whose E-terms are not a
+  rotation) and the ecliptic frames are refused rather than silently
   reinterpreted.
 - **Algorithms**: bilinear/nearest interpolation (`reproject_interp`) and the
   DeForest (2004) adaptive anti-aliased algorithm (`reproject_adaptive`).

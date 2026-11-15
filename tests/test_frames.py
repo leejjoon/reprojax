@@ -96,7 +96,7 @@ def test_fk5_pair_rotation_is_orthonormal_and_composed_error_matches_skycoord():
 
     error = _composed_error(wcs_in, wcs_out)
     assert np.isfinite(error).all()
-    assert np.nanmax(error) < PIX_TOL
+    assert max(error) < PIX_TOL
 
 
 def test_rotation_probe_directions_agree_with_skycoord():
@@ -110,7 +110,12 @@ def test_rotation_probe_directions_agree_with_skycoord():
     frame_to = wcs_to_celestial_frame(_wcs(RADESYS="FK5", EQUINOX=1950))
     assert isinstance(frame_from, FK5) and isinstance(frame_to, FK5)
 
-    probe = SkyCoord([37.0, 10.0, 250.0, 0.0, 359.0], [-12.0, 89.0, -89.0, 0.0, 45.0], unit="deg", frame=frame_from)
+    probe = SkyCoord(
+        [37.0, 10.0, 250.0, 0.0, 359.0],
+        [-12.0, 90.0, -90.0, 0.0, 45.0],
+        unit="deg",
+        frame=frame_from,
+    )
     expected = probe.transform_to(frame_to).cartesian
     got = rotation @ np.stack([probe.cartesian.x.value, probe.cartesian.y.value, probe.cartesian.z.value])
 
@@ -200,9 +205,16 @@ def test_descriptor_audit_covers_every_suite_fixture():
         assert kind in {"icrs", "fk5", "galactic"}
 
 
-def test_alternate_wcs_version_is_accepted():
-    from reprojax._astropy_wcs import frame_descriptor
-
+def test_alternate_wcs_version_builds_an_independent_transform():
+    """An ``A``-key alternate WCS resolves to a different projection (SIN)
+    and must build a transform of its own, not reuse the primary TAN one.
+    """
     header = make_header((256.0, 256.0), (180.0, 30.0), 1.0, naxis=(512, 512))
     header["CTYPE1A"], header["CTYPE2A"] = "RA---SIN", "DEC--SIN"
-    assert frame_descriptor(WCS(header, key="A")).kind == "icrs"
+    build_transform.cache_clear()
+
+    alternate = build_transform(WCS(header, key="A"), WCS(header, key="A"))
+    primary = build_transform(WCS(header), WCS(header))
+
+    assert WCS(header, key="A").wcs.ctype[0] == "RA---SIN"
+    assert alternate is not primary

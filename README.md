@@ -14,7 +14,7 @@ reprojax's own.
 
 ## Status
 
-0.3.0.dev0 (unreleased; the 0.3.0 section of `CHANGELOG.md` is the
+0.3.0 (the 0.3.0 section of `CHANGELOG.md` is the
 changelog for it). The validated scope is deliberate:
 
 - **Projections**: TAN and SIN, with SIP distortion. Anything else raises

@@ -29,27 +29,40 @@ those raw attributes, so a TPV WCS shared a cache entry with a plain TAN
 WCS. TPV is now refused.
 - **A cube reported mapprojax's internal error.** A 3-D `output_projection`
 now refuses with `pass a two-axis celestial WCS, e.g. wcs.celestial`, for a
-`Header` and a `WCS`, before any output grid is allocated.
+`Header` and a `WCS`, before any output grid is allocated. (reprojax's own
+guard; the message is not `from_astropy`'s.)
 
 ### Changed
 
-- **Unsupported projections raise `ValueError`, not
-`NotImplementedError`.** One refusal type now covers every unsupported input,
-and the message is `mapprojax.from_astropy`'s. A caller catching
-`NotImplementedError` must catch `ValueError` instead.
-- **New refusals that 0.2.0 accepted.** Each of these previously computed a
-number:
+- **Refusals raise `ValueError`, not `NotImplementedError`.** Projection and
+FITS-convention refusals come from `mapprojax.from_astropy` and carry its
+message. reprojax raises its own `ValueError` for the frame allow-list, a
+non-rigid rotation, a non-2-D WCS, an unsupported `order` or `kernel`, an
+uninferable `shape_out`, and a bad `matrix_precision`. A caller catching
+`NotImplementedError` must catch `ValueError` instead. A malformed header can
+still fail earlier, inside `astropy.wcs.WCS`, before reprojax runs.
+- **New refusals: inputs 0.2.0 returned a result for.**
   - **any PV card on TAN**, including the identity `PV1_1 = 0.0` — 0.2.0
     ignored PV entirely;
   - **TAN at `CRVAL2 = +90`**, because wcslib's default there is
     `LONPOLE = 0`. Note the asymmetry: `CRVAL2 = -90` is still accepted,
     since its default is 180;
-  - **lookup tables** (`cpdis1`/`cpdis2`, `det2im1`/`det2im2`) and TPV/TPD/
-    `-TAB` conventions;
+  - **lookup tables** (`cpdis1`/`cpdis2`, `det2im1`/`det2im2`);
+  - **TPV, and TPD carried as `CQDIS`/`DQ` cards.** Astropy reports both as
+    plain `RA---TAN` with `has_distortion == False` and no PV cards, so 0.2.0
+    accepted them and silently dropped the distortion;
   - **FK4 and FK4-NO-E headers**. FK4's E-terms are not a rotation, so it is
     refused rather than approximated; FK4-NO-E is a rigid rotation and could
     be allow-listed later. The ecliptic axes (`ELON`/`ELAT`) are refused
     too: astropy resolves them to ICRS, which would be silently wrong.
+- **Already refused by 0.2.0, now as `ValueError` with `from_astropy`'s
+message.** Unsupported projection codes astropy can still construct — AZP, ZEA
+and the like. 0.2.0 raised `NotImplementedError` for these; the type changed,
+nothing else did.
+- **Unreachable in both versions.** A literal `RA---TPD` CTYPE fails inside
+`astropy.wcs.WCS` (`InconsistentAxisTypesError`), and `-TAB` without its
+`WCS-TAB` HDU raises `MemoryError` there. Both die at `WCS(header)`, before
+reprojax runs.
 - **Dependency floor**: `mapprojax[astropy]>=0.4.0,<0.5`. Both CI
   constraint files move to `mapprojax==0.4.0`, and the extra's
   `astropy>=7.2.0` floor is already satisfied on both stacks.

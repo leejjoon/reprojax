@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.3.0 — unreleased
+## 0.3.0 — 2026-11-16
 
-Dated at release. Host-side WCS handling now goes through
+Host-side WCS handling now goes through
 `mapprojax.from_astropy`, which fixes three latent defects and changes what
 is refused.
 

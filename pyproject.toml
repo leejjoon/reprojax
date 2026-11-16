@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reprojax"
-version = "0.3.0"
+version = "0.3.1.dev0"
 description = "JAX-native, differentiable reprojection of astronomical images (a port of astropy's reproject)"
 readme = "README.md"
 license = "BSD-3-Clause"

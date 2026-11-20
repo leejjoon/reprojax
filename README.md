@@ -14,10 +14,11 @@ reprojax's own.
 
 ## Status
 
-0.3.0 (the 0.3.0 section of `CHANGELOG.md` is the
+0.3.1 (the 0.3.1 section of `CHANGELOG.md` is the
 changelog for it). The validated scope is deliberate:
 
-- **Projections**: TAN and SIN, with SIP distortion. Anything else raises
+- **Projections**: the zenithal TAN, SIN, ZEA, STG and ARC (ZEA, STG and ARC
+  since 0.3.1, with mapprojax 0.5.0), with SIP distortion. Anything else raises
   `ValueError`, and so does any distortion convention this library refuses
   (TPV, TPD, lookup tables). One caveat: a `-TAB` header needs its `WCS-TAB`
   extension HDU, and astropy fails while building the `WCS` when it is

@@ -1,7 +1,7 @@
 """Build a :class:`~reprojax.core.PixelTransform` from a pair of astropy WCS objects.
 
-mapprojax provides the projection math (TAN, SIN, with optional SIP
-distortion); astropy provides celestial frame determination and rotation.
+mapprojax provides the projection math (the zenithal TAN, SIN, ZEA, STG and
+ARC, with optional SIP distortion); astropy provides celestial frame determination and rotation.
 Everything astropy-facing runs once, eagerly, at build time in
 :func:`build_transform`; the returned callable is pure JAX and safe under
 ``jit``/``vmap``/``grad``.
@@ -109,7 +109,8 @@ def compose_transform(mwcs_in, mwcs_out, rotation):
     Parameters
     ----------
     mwcs_in, mwcs_out : mapprojax WCS
-        ``mapprojax.wcs.Tan`` or ``mapprojax.wcs.Sin``, constructed with
+        A mapprojax projection class (``Tan``, ``Sin``, ``Zea``, ``Stg`` or
+        ``Arc``), constructed with
         ``precision="f64"`` (the ``precision=`` argument is required), and
         optionally carrying a ``mapprojax.sip.Sip``.
     rotation : array, shape (3, 3)
@@ -186,10 +187,11 @@ def build_transform(wcs_in, wcs_out, matrix_precision="f64"):
     Parameters
     ----------
     wcs_in, wcs_out : astropy.wcs.WCS
-        TAN or SIN projections, optionally with SIP distortion.
+        TAN, SIN, ZEA, STG or ARC projections, optionally with SIP distortion.
     matrix_precision : {"f64", "f32"}
         - ``"f64"`` (default): builds ``mwcs_in``/``mwcs_out`` as mapprojax
-          ``Tan``/``Sin`` with ``precision="f64"`` and composes them via
+          kernels (``Tan``, ``Sin``, ``Zea``, ``Stg`` or ``Arc``) with
+          ``precision="f64"`` and composes them via
           :func:`compose_transform` (``Reprojector.from_matrix`` with
           ``matrix_precision="f64"``), entirely in float64. Requires
           ``jax_enable_x64`` for correctness.

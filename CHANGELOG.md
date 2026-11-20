@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1 — 2026-11-20
+
+### Added
+
+- **ZEA, STG and ARC projections**, through mapprojax 0.5.0. reprojax builds
+its kernels with `mapprojax.from_astropy`, so these headers -- previously
+refused -- now reproject end to end: TAN<->ZEA in both directions and both
+matrix precisions agree with the astropy round trip within the existing
+tolerances (1e-4 px f64, 5e-3 px f32), and a ZEA image through
+`reproject_interp` matches the original `reproject`. The parametrised
+zenithals (AZP, SZP, ZPN, AIR) are still refused.
+
+### Changed
+
+- Requires `mapprojax[astropy]>=0.5.0,<0.6` (was `>=0.4.0,<0.5`).
+
 ## 0.3.0 — 2026-11-16
 
 Host-side WCS handling now goes through

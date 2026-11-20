@@ -15,7 +15,7 @@ jax==0.10.2
 jaxlib==0.10.2
 lazy-importer==0.1.0
 locket==1.0.0
-mapprojax==0.4.0
+mapprojax==0.5.0
 ml-dtypes==0.6.0
 numcodecs==0.16.6
 numpy==2.4.6

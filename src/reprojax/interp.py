@@ -145,7 +145,7 @@ def reproject_interp_batched(
     transform, then reproject) — per the design, batching happens by
     vmapping the core, not by threading a batch dimension through a single
     transform. This is a thin, documented recipe: build ``mwcs_in_batch``
-    (and ``rotation_batch``) yourself with mapprojax's ``Tan``/``Sin`` (which are
+    (and ``rotation_batch``) yourself with mapprojax's projection classes (which are
     JAX pytrees), each leaf carrying a leading batch dimension, and everything
     else follows the same path as the single-exposure core.
 
